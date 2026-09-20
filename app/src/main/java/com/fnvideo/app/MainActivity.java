@@ -9,6 +9,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -28,9 +29,11 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.media3.common.C;
+import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.Tracks;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.recyclerview.widget.RecyclerView;
@@ -113,7 +116,13 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         restoreSession();
         refreshRepository();
         buildUi();
-        player = new ExoPlayer.Builder(this).build();
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
+        player = new ExoPlayer.Builder(this)
+                .setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA)
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
+                .setHandleAudioBecomingNoisy(true)
+                .build();
         player.addListener(createPlayerListener());
         mainHandler.post(progressTicker);
 
@@ -252,6 +261,17 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private Player.Listener createPlayerListener() {
         return new Player.Listener() {
             @Override
+            public void onTracksChanged(@NonNull Tracks tracks) {
+                if (activeHolder == null || !PlaybackCompatibility.hasUnsupportedAudio(tracks)) {
+                    return;
+                }
+                if (!tryCompatiblePlayback()) {
+                    player.stop();
+                    activeHolder.showError("当前设备无法播放此音轨，兼容播放也未成功。请检查 NAS 转码能力或换一部影片。");
+                }
+            }
+
+            @Override
             public void onPlaybackStateChanged(int state) {
                 FeedAdapter.VideoViewHolder holder = activeHolder;
                 if (holder == null) {
@@ -282,15 +302,25 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
                 if (holder == null) {
                     return;
                 }
-                if (!compatibilityAttempted && (isDecodingError(error)
-                        || error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED)) {
-                    compatibilityAttempted = true;
-                    preparePlayback(activePosition, holder, true);
+                if ((isDecodingError(error)
+                        || error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED)
+                        && tryCompatiblePlayback()) {
                     return;
                 }
                 holder.showError(actionablePlaybackError(error));
             }
         };
+    }
+
+    private boolean tryCompatiblePlayback() {
+        if (compatibilityAttempted || destroyed || activeHolder == null
+                || activePosition == RecyclerView.NO_POSITION) {
+            return false;
+        }
+        compatibilityAttempted = true;
+        long position = Math.max(0L, player.getCurrentPosition());
+        preparePlayback(activePosition, activeHolder, true, position);
+        return true;
     }
 
     private void restoreSession() {
@@ -473,6 +503,11 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     }
 
     private void preparePlayback(int position, FeedAdapter.VideoViewHolder holder, boolean compatible) {
+        preparePlayback(position, holder, compatible, readResumePosition(adapter.getVideo(position)));
+    }
+
+    private void preparePlayback(int position, FeedAdapter.VideoViewHolder holder,
+                                 boolean compatible, long resumePosition) {
         MediaRepository.Video video = adapter.getVideo(position);
         MediaRepository requestRepository = repository;
         if (video == null || !hasSession() || requestRepository == null) {
@@ -481,6 +516,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         }
         final int generation = ++playbackGeneration;
         cancel(playbackRequest);
+        player.stop();
         holder.showLoading();
         holder.setFitMode(zoomMode);
         playbackRequest = networkExecutor.submit(() -> {
@@ -491,7 +527,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
                     if (!destroyed && generation == playbackGeneration
                             && position == activePosition && activeHolder == holder
                             && repository == requestRepository) {
-                        attachPlayback(holder, source);
+                        attachPlayback(holder, source, resumePosition);
                     }
                 });
             } catch (Exception error) {
@@ -506,7 +542,8 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         });
     }
 
-    private void attachPlayback(FeedAdapter.VideoViewHolder holder, MediaRepository.Source source) {
+    private void attachPlayback(FeedAdapter.VideoViewHolder holder, MediaRepository.Source source,
+                                long resumePosition) {
         try {
             if (activeHolder != holder) {
                 return;
@@ -525,9 +562,8 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             holder.setSeekEnabled(false);
             holder.showLoading();
             player.prepare();
-            long resume = readResumePosition(holder.getVideo());
-            if (resume > 0) {
-                player.seekTo(resume);
+            if (resumePosition > 0) {
+                player.seekTo(resumePosition);
             }
             if (foreground && !userPaused) {
                 player.play();

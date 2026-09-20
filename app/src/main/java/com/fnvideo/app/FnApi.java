@@ -45,6 +45,7 @@ public final class FnApi implements MediaRepository {
     private static final String CLIENT_VERSION = "629";
     private static final String DEFAULT_USER_AGENT = "FnVideo/1.0 (Android)";
     private static final int PAGE_SIZE = 50;
+    private static final int MAX_COMPATIBLE_AUDIO_CHANNELS = 2;
     private static final int CONNECT_TIMEOUT_MS = 15_000;
     private static final int READ_TIMEOUT_MS = 30_000;
 
@@ -198,10 +199,15 @@ public final class FnApi implements MediaRepository {
         String videoEncoder = forceCompatible
                 ? "h264"
                 : videoStream == null ? "" : encoder(firstString(videoStream, "codec_name", "codec"));
-        String audioEncoder = forceCompatible
-                ? "aac"
-                : audioStream == null ? "" : encoder(firstString(audioStream, "codec_name", "codec"));
+        String audioEncoder = audioStream == null
+                ? ""
+                : forceCompatible ? "aac" : encoder(firstString(audioStream, "codec_name", "codec"));
         int channels = audioStream == null ? 0 : firstInt(audioStream, "channels");
+        if (forceCompatible) {
+            // AAC compatibility output is limited to stereo. Preserve mono and
+            // keep an absent audio stream represented as zero channels.
+            channels = Math.max(0, Math.min(channels, MAX_COMPATIBLE_AUDIO_CHANNELS));
+        }
         String audioGuid = audioStream == null ? "" : firstString(audioStream, "guid");
         String subtitleGuid = subtitleStream == null ? "" : firstString(subtitleStream, "guid");
 

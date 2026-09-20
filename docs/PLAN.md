@@ -35,7 +35,8 @@
 | 里程碑 | 验收 | 状态 |
 | --- | --- | --- |
 | M1 调查与设计 | 明确代码缺口、范围与回归计划 | DONE |
-| M2 修复与回归 | 音轨支持/无音轨/多音轨测试、兼容 AAC 声道契约；testDebugUnitTest、assembleDebug、lintDebug | TODO |
+| M2 修复与回归 | 音轨支持/无音轨/多音轨测试、兼容 AAC 声道契约；testDebugUnitTest、assembleDebug、lintDebug | DONE：单测、构建、lint 和 4 项设备音轨测试通过 |
 | M3 设备检查与交付 | 可用安卓环境安装/生命周期检查，列出真机未验项，产出 APK | TODO |
 
 验收必须区分代码缺口修复、容器验证和用户实体手机实际可听声音。不能用构建成功或容器 AudioTrack 证明实体手机修复成功。
+

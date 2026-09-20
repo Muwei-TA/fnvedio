@@ -97,3 +97,11 @@ SessionStore -> serverOrigin + encryptedToken
 使用 clean-architecture 保持依赖方向，a-philosophy-of-software-design 约束接口深度，clean-code 与 code-complete 约束具体实现。避免为遵守层数而增加无价值包装。
 
 技术依据：[Android 官方 Media3 播放器文档](https://developer.android.com/media/media3/exoplayer/hello-world)。依赖固定具体版本以获得可重复构建，不在构建时自动追随最新版本。
+
+### 音轨兼容修正
+
+当源包含音轨但设备没有支持的音轨时，Media3 可能继续播放画面而不触发致命错误。播放控制通过 Tracks 检测此状态，与解码错误共用每页一次的兼容回退；无音轨视频不触发回退。切换前停止旧源并保留当前位置，新的网络结果仍受代数、页面和仓库身份校验。兼容音轨仍不受支持时停止并显示错误，不循环转码。
+
+FnApi 的兼容请求使用 AAC 并将声道限制为最多 2，保留单声道/无音轨语义。常规请求仍使用源音频参数。播放器设置媒体用途、电影内容类型和自动音频焦点，音量键控制媒体流，不改系统音量。公开仓库契约及 NAS 配置不变。
+
+参考：[Android Media3 音轨选择](https://developer.android.com/media/media3/exoplayer/track-selection)。实际编译和设备测试针对固定 Media3 1.5.1。
