@@ -108,7 +108,7 @@ public final class LoginActivity extends Activity {
             origin = uri.getScheme()+"://"+uri.getEncodedAuthority();
             message.setText("在下方飞牛官方页面登录，成功后自动返回播放页。");
             web.loadUrl(origin+"/v/login");
-        } catch (Exception e) { message.setText("请输入完整地址，例如 http://192.0.2.1:5666"); }
+        } catch (Exception e) { message.setText("请输入完整的飞牛影视服务地址"); }
     }
     private boolean sameOrigin(String url) {
         if (url == null || origin == null) return false;

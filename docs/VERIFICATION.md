@@ -1,106 +1,20 @@
 # 验证记录
 
-日期：2026-09-20。整体状态 **PARTIAL**：NAS Android 13 已安装新版，真实登录、片库、滑动换片及原生影片播放已验证；实体手机与完整生命周期验收仍未完成。
+本文件只记录可公开复现的项目级验证，不包含真实服务地址、设备地址、账号、会话、片库或运维环境信息。
 
-工作目录 `D:\codex\fnvedio`；Git 无提交，源码为本任务未提交工作区。环境：Windows、OpenJDK 21.0.8、Gradle 8.9、AGP 8.7.3、SDK / Build Tools 35。
+## 当前状态
 
-| 验收 / 检查 | 实际命令或操作 | 结果 | 证据与限制 |
-| --- | --- | --- | --- |
-| Git 仓库 | `git init`、`git status --short` | PASS | 已初始化；未提交、推送或发布 |
-| NAS 网页账号登录 | 用户自行在官方网页登录 | PASS | 可见片库；未提取桌面登录令牌 |
-| 网页实际视频播放 | 浏览器读取 video 状态 | PASS | readyState=4、currentTime=26.567 秒、1920×1038；仅证明网页链路 |
-| 单测与构建 | 当前进程设置 `FNVIDEO_TEST_SERVER=http://192.0.2.1:5666`；`./tools/build.ps1 -Task testDebugUnitTest,assembleDebug,lintDebug` | PASS | 最终退出码 0，BUILD SUCCESSFUL；13 测试、0 失败、0 跳过 |
-| Feed 规则 | `FeedStateTest` | PASS | 4 项：旧请求丢弃、分页去重、空库终止、目录不能进入播放队列 |
-| API 模拟契约 | `FnApiTest` | PASS | 5 项：H.264/HLS 兼容契约、签名头及摘要、库范围与分页、直链 UA 一致且无 NAS 认证头、认证错误分类 |
-| 跨域请求头 | `PlaybackDataSourceTest` | PASS | 3 项：同源保留、跨域清除敏感头、不同端口不信任；未模拟真实 CDN |
-| 实际 NAS 签名 | `NasContractSmokeTest` | PASS | 1 项：无凭据调用受保护接口返回 code=-2，说明签名被接受；未读取私人目录 |
-| Android lint | `lintDebug` | PASS | 0 errors、22 warnings；未关闭检查或建立忽略基线 |
-| APK 签名 | `apksigner.bat verify --verbose app/build/outputs/apk/debug/app-debug.apk` | PASS | 退出码 0，APK Signature Scheme v2 验证通过 |
-| APK 元数据 | `aapt.exe dump badging ...` | PASS | com.fnvideo.app / 1.0；minSdk 26、targetSdk 35；启动 MainActivity |
-| NAS Android 原生路径 | ADB 安装、用户登录与实际播放 | PASS（部分） | 登录、片库、换片及 H.264/HLS 播放已验证；实体手机、续播、退后台及全部片源未验收 |
-
-历史失败已修复：缺 Build Tools 34（显式使用已安装 35）、界面方法访问/返回类型错误、测试 HTTP server 不兼容（改配套 MockWebServer）、Media3 接口需显式 OptIn。最后修正了播放 User-Agent 与申请直链时保持一致，随后重新运行上述完整检查。
-
-lint 提示保留可见：固定依赖存在更新、产品按用户要求锁定竖屏、官方登录页需要 JavaScript、旧版备份规则建议、全列表替换事件和中文文案国际化建议。未为了通过检查隐藏这些提示。
-
-架构审查：FeedPolicy / FeedState 是无 Android 依赖的规则与状态；MediaRepository 是内层契约；FnApi 负责协议映射；PlaybackDataSource 负责传输鉴权范围。MainActivity 仍较大，是当前维护限制。子代理审查过登录与存储，根代理修复并复核；这不等同于独立安全审计。
-
-## NAS Android 容器验证历史（2026-09-20，阻塞随后解除）
-
-用户指定使用现有 NAS Android 容器。结果 **BLOCKED_ENVIRONMENT**，APK 尚未安装成功，登录和播放验收未运行。
-
-- fnOS Docker 页面确认 `fn-redroid` 正在运行，镜像 `local/redroid-gapps:13.0.0-r83-webview109-soong-test`，映射 TCP 5555，1080×1920；`fn-ws-scrcpy` 映射 8000。未重建或重启容器。
-- 初始 `adb connect 192.0.2.1:5555` 超时（10060）；网页控制台无设备。ws-scrcpy 历史日志含 `failed to connect to 'fn-redroid:5555': Connection refused`。
-- 通过 fnOS 容器终端只读检查：Android boot_completed=1、adbd=running、监听 `*:5555`。`ip route get 172.20.0.3` 和 `ip route get 192.0.2.1` 均返回 `Network is unreachable`。
-- 临时加入容器内 `ip rule add pref 31000 lookup main` 和 `ip route add 192.0.2.0/24 via 192.0.2.1` 后，ADB 成功连接；设备查询确认 Android 13。
-- `adb install -r dist/牛影随看-debug.apk` 失败：`Failure calling service package: Broken pipe (32)`。非流式重试失败：`connect failed: closed`；随后设备 offline。再次查看时临时 31000 规则已消失，原因尚未确定，不能据此断言容器重启或应用崩溃。
-- 容器内 `pm path com.fnvideo.app` 无路径、退出 1。crash buffer 末尾为 09-11 的旧 DeadSystemException，不能作为本次故障根因。
-- 已删除临时 192.0.2.0/24 路由，并读取 ip rule/ip route 确认恢复原状态；未改 NAS 主机网络、防火墙或持久容器配置。未获得任何应用运行通过证据。
-
-### SSH 修复与复验（同日 22:31 起）
-
-用户明确授权修复/重启，并要求改用 SSH、建立密钥。已建立 Windows 专用 Ed25519 密钥，保留 NAS 原有 authorized_keys 内容，使用已记录的主机密钥校验。配置别名 `nas-host`；`ssh -o BatchMode=yes nas-host id` 成功。密码未写入项目或诊断文件。
-
-修复前 SSH 直接检查：容器 restart count=0、OOMKilled=false，但 Android `service check connectivity` 找不到服务，system_server 仅部分服务启动，未能建立 eth0 的完整 policy rules。旧日志不足以证明具体根因。宿主 legacy iptables filter 模块未加载是兼容性疑点，不能当成已证实根因。
-
-执行 `docker restart -t 20 fn-redroid`，保留同一镜像和 /data。没有加载内核模块、改变防火墙、添加永久路由或重建数据卷。重启后：
-
-- boot_completed=1；connectivity/package 服务 found；系统自动恢复 eth0 policy rules。
-- `ip route get 192.0.2.1` 正常经 192.0.2.1、table eth0。
-- Windows ADB 连接成功；`adb install --no-streaming -r` 返回 Success；`pm path com.fnvideo.app` 返回 base.apk 路径。
-- `am start -W -n com.fnvideo.app/.MainActivity` 返回 Status ok，冷启动 TotalTime=1518ms。
-- 原生初始页、LoginActivity 和 NAS 官方登录表单已实际显示，截图 `dist/verification/android-login.png`。
-- ws-scrcpy 重新执行 `adb connect fn-redroid:5555` 后 device 状态恢复，网页控制台可打开实时画面。
-
-环境阻塞已解除；应用整体仍 PARTIAL，等待用户在安卓端登录后验证真实播放和交互。不能将启动通过等同于解码验收。真实令牌、密码和片库内容不写入记录。
-
-### 登录后修复与实际播放（同日 23:00）
-
-当前服务器仍为 `http://192.0.2.1:5666`。真实片库读取与影片播放证明容器已可访问该地址，无需替换 IP。
-
-- 修正 item/list 参数：sort_type=DESC、sort_column=create_time、exclude_grouped_video=1；原服务端 Internal Error 不再误报为地址错误。
-- 修正 ViewPager2 页面必须 MATCH_PARENT 的布局约束，解除打开片库后的崩溃。
-- 容器 HEVC Main10 解码能力不足时，每页只自动尝试一次飞牛 H.264/AAC 兼容流。HLS 使用原始 play_link，并设置 Media3 1.5.1 识别的 application/x-mpegURL；不将 HLS 包进 media/range。
-- 用户完成官方登录后，真实媒体库和电影列表可见；滑动已切换不同影片。普通电影原生画面实际显示，进度 00:10 → 00:21 → 00:39，时长 2:13:42；证据为 dist/verification/android-playback.png。
-- 最终代码运行 testDebugUnitTest、assembleDebug、lintDebug 成功；13 测试、0 失败、0 错误、0 跳过，lint 0 errors / 22 warnings；APK v2 签名有效。
-- 新版 APK 已覆盖安装并保留登录数据。暂停和显示模式控件有响应，但未完成隔离、持续的验收；后台无声、断网恢复、快速连续换片、续播、字幕及实体手机仍待测试。不能把一次成功播放扩大为全部片源兼容。
-
-仅保存不含凭据的验证结果；源码包不含片库快照、诊断日志、登录数据或 SSH 私钥。
-
-## 实体手机无声修复验证（2026-09-20）
-
-代码基线：`d8423b0`，分支 `codex/fix-silent-audio`。状态：**PARTIAL（代码与可用设备检查完成，用户实体手机听音待复验）**。用户明确说明问题发生在实体手机；当前 ADB 只有 Android 13 测试容器，不能把容器的音频结果当作手机根因已确认。
-
-已证实代码缺口：旧版只通过 onPlayerError 回退，不检查已发现但不受支持的音轨；兼容请求仍保留原始多声道数。修复增加真实 Tracks 支持判断、每页一次兼容回退、当前位置保留、AAC 至多双声道及媒体音频属性。未修改 NAS 部署、数据库、媒体或真实账号数据。
-
-| 检查 | 命令/操作 | 结果 |
+| 项目 | 状态 | 说明 |
 | --- | --- | --- |
-| 改前基线 | gradlew.bat --no-daemon --console=plain testDebugUnitTest assembleDebug lintDebug | PASS；NAS 无凭据冒烟测试未启用 |
-| 完整构建 | gradlew.bat --no-daemon --console=plain testDebugUnitTest assembleDebug lintDebug assembleDebugAndroidTest | PASS，退出 0 |
-| 最终单测和 lint | gradlew.bat --no-daemon --console=plain testDebugUnitTest lintDebug | PASS；15 项通过，1 项 NasContractSmokeTest 因未设置专用环境变量而按既有条件跳过；lint 0 errors / 14 warnings |
-| 实际 Media3 音轨测试 | adb shell am instrument -w -e class com.fnvideo.app.PlaybackCompatibilityTest com.fnvideo.app.test/android.test.InstrumentationTestRunner | PASS，OK (4 tests)；不支持音轨、可用备用音轨、空/无音轨、超设备能力 |
-| 安装和登录状态 | adb install --no-streaming -r；am start -W | PASS，覆盖安装保留已有登录状态，冷启动成功；本次未重新执行登录流程 |
-| 数字音频输出 | scrcpy 4.1 --no-video --no-playback --no-window --no-control --audio-codec=raw --record=… --time-limit=8 | 7.915 秒双声道 PCM，峰值 99，323811 个非零样本；仅证明容器产生数字音频，不代表实体扬声器听音通过 |
-| 手动暂停 | 点击播放页暂停，录制约 2.923 秒 PCM | PASS，峰值 0 |
-| 保留手动暂停 | 暂停后 HOME，再返回应用并录音 | PASS，峰值 0 |
-| 播放切后台 | 恢复播放后 HOME，录音 | PASS，峰值 0 |
-| 快速换片 | 连续 3 次上滑后录制约 7.915 秒 | 冒烟执行完成，峰值 1；不将微弱非零信号当作可听声音或全部并发边界通过 |
-| 返回键离开 | BACK 后录音约 2.923 秒 | PASS（后台静音），峰值 0；Android 根 Activity 可转后台，因此不声称 onDestroy 已验收 |
-| APK 签名 | apksigner verify --verbose | PASS，v2 签名有效 |
-| Git 质量 | git diff --check | PASS |
+| 单元测试 | PASS | `testDebugUnitTest` 已通过 |
+| Debug APK 构建 | PASS | `assembleDebug` 已通过 |
+| Lint | PASS | `lintDebug` 已完成；以 CI 最新结果为准 |
+| 真实设备播放 | PARTIAL | 需要使用者在自己的 Android 设备和服务环境中复验 |
 
-测试环境问题如实记录：最初把 Tracks 测试放在本地 JVM，遇到 Android TextUtils.isEmpty 未实现；已迁到真实设备 instrumentation，不添加 returnDefaultValues 或降低断言。复用现有 JUnit 4.13.2 到 androidTest，使用平台自带 runner。首次未限定 class 的旧 runner 扫描遇到可选平台类并长时间不返回，终止该次测试后用上表精确 class 命令完成 4 项测试。
+## 可复现命令
 
-API 适配与测试由独立子代理实现并审查父代理播放改动，未发现阻塞问题。主代理核对 diff、构建、设备结果与安全边界。异步播放源仍沿用代数/页面/仓库身份检查，没有第二个播放器。
+```powershell
+.\\tools\\build.ps1 -Task testDebugUnitTest,assembleDebug,lintDebug
+```
 
-交付：`dist/牛影随看-audio-fix-debug.apk`（忽略目录，不提交二进制）。SHA-256：`1960362B5AAC4A508345A2455017082B5968774F911B88A693FD2F0431D4B2C1`。原始本地验证材料仅在忽略目录；Git 不含私人片库、音频或会话内容。
-
-仍待：用户实体手机安装此 APK 后同片源听音，手机型号/音轨格式确认，耳机/蓝牙及焦点中断、真正 onDestroy 释放和长时间高频滑动。NAS 转码是否覆盖全部音频编码不作保证；本次不改 NAS 配置。下一步以实体手机实际结果继续定位，不重复把构建成功当修复成功。
-
-## 主分支合并与带版本 APK（2026-09-20）
-
-已保留 main 的独立接手文档更新，并合并音频修复分支；PLAN 的文本冲突通过保留两侧有效记录解决。版本更新为 versionName=1.0.1 / versionCode=2。
-
-在 main 工作区运行 `./tools/build.ps1 -Task testDebugUnitTest,assembleDebug,lintDebug`：退出 0，BUILD SUCCESSFUL；15 项单测通过，1 项既有 NAS 环境条件测试跳过。自动导出 `dist/fnvideo-v1.0.1-2-debug.apk`，aapt 核实包内版本为 1.0.1 / 2，apksigner verify 验证 v2 签名有效。SHA-256：`F912FB058910D1666F1B319ACD0D141E579B11BADEC5A235A2F2CDA8CEBE8BD8`。
-
-本次仅版本元数据、构建导出与文档变更；未重复安装或声称实体手机声音问题已验证。此前设备验证范围与限制仍有效。未推送远程。
+应用不会在仓库中保存账号、密码、Cookie、会话令牌、私有媒体内容或真实服务配置。真实环境验证应通过本地环境变量 `FNVIDEO_TEST_SERVER` 传入，并避免将其值写入日志或提交。

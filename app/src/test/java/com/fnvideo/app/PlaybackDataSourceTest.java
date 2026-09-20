@@ -6,7 +6,7 @@ import okhttp3.Request;
 import static org.junit.Assert.*;
 
 public class PlaybackDataSourceTest {
-    private final HttpUrl nas = HttpUrl.parse("http://192.0.2.1:5666");
+    private final HttpUrl nas = HttpUrl.parse("http://nas.example.test:5666");
 
     private Request request(String url) {
         return new Request.Builder().url(url)
@@ -17,7 +17,7 @@ public class PlaybackDataSourceTest {
     }
 
     @Test public void nasSegmentsKeepAuthentication() {
-        Request result = PlaybackDataSource.scopedRequest(nas, request("http://192.0.2.1:5666/segment.ts"));
+                Request result = PlaybackDataSource.scopedRequest(nas, request("http://nas.example.test:5666/segment.ts"));
         assertEquals("test-session", result.header("Authorization"));
         assertEquals("test-play-link", result.header("Play-Link"));
     }
@@ -31,7 +31,7 @@ public class PlaybackDataSourceTest {
     }
 
     @Test public void differentPortIsNotTrustedOrigin() {
-        Request result = PlaybackDataSource.scopedRequest(nas, request("http://192.0.2.1:8080/video"));
+        Request result = PlaybackDataSource.scopedRequest(nas, request("http://nas.example.test:8080/video"));
         assertNull(result.header("Authorization"));
     }
 }

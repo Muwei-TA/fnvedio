@@ -16,7 +16,7 @@ import javax.crypto.spec.GCMParameterSpec;
 public final class SessionStore {
     private static final String ALIAS = "fnvideo.session.v1";
     private static SharedPreferences prefs(Context c) { return c.getSharedPreferences("session", Context.MODE_PRIVATE); }
-    public static String base(Context c) { return prefs(c).getString("base", "http://192.0.2.1:5666"); }
+    public static String base(Context c) { return prefs(c).getString("base", "http://nas.example.test:5666"); }
     private static SecretKey key() throws Exception {
         KeyStore ks = KeyStore.getInstance("AndroidKeyStore"); ks.load(null);
         if (!ks.containsAlias(ALIAS)) {

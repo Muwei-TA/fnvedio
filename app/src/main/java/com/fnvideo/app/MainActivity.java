@@ -912,7 +912,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private void showSettingsDialog() {
         LinearLayout card = dialogCard();
         addDialogTitle(card, "连接设置");
-        EditText baseField = editText("服务器地址，例如 http://192.0.2.1:5666/v",
+        EditText baseField = editText("服务器地址，例如 http://nas.example.test:5666/v",
                 serverBase);
         baseField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         card.addView(baseField, new LinearLayout.LayoutParams(
