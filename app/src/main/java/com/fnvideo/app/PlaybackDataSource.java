@@ -20,12 +20,15 @@ public final class PlaybackDataSource {
     public static DataSource.Factory forSource(MediaRepository.Source source, String serverOrigin) {
         HttpUrl trusted = HttpUrl.parse(serverOrigin);
         if (trusted == null) throw new IllegalArgumentException("无效的服务器地址");
-        OkHttpClient client = CLIENT.newBuilder()
-                .addNetworkInterceptor(chain -> {
-                    return chain.proceed(scopedRequest(trusted, chain.request()));
-                })
+        return new OkHttpDataSource.Factory(scopedClient(trusted))
+                .setDefaultRequestProperties(source.headers);
+    }
+
+    /** Shared by Media3 and HTTP regression tests so redirect policy cannot diverge. */
+    static OkHttpClient scopedClient(HttpUrl trusted) {
+        return CLIENT.newBuilder()
+                .addNetworkInterceptor(chain -> chain.proceed(scopedRequest(trusted, chain.request())))
                 .build();
-        return new OkHttpDataSource.Factory(client).setDefaultRequestProperties(source.headers);
     }
 
     static Request scopedRequest(HttpUrl trusted, Request request) {
