@@ -66,3 +66,33 @@ lint 提示保留可见：固定依赖存在更新、产品按用户要求锁定
 - 新版 APK 已覆盖安装并保留登录数据。暂停和显示模式控件有响应，但未完成隔离、持续的验收；后台无声、断网恢复、快速连续换片、续播、字幕及实体手机仍待测试。不能把一次成功播放扩大为全部片源兼容。
 
 仅保存不含凭据的验证结果；源码包不含片库快照、诊断日志、登录数据或 SSH 私钥。
+
+## 实体手机无声修复验证（2026-09-20）
+
+代码基线：`d8423b0`，分支 `codex/fix-silent-audio`。状态：**PARTIAL（代码与可用设备检查完成，用户实体手机听音待复验）**。用户明确说明问题发生在实体手机；当前 ADB 只有 Android 13 测试容器，不能把容器的音频结果当作手机根因已确认。
+
+已证实代码缺口：旧版只通过 onPlayerError 回退，不检查已发现但不受支持的音轨；兼容请求仍保留原始多声道数。修复增加真实 Tracks 支持判断、每页一次兼容回退、当前位置保留、AAC 至多双声道及媒体音频属性。未修改 NAS 部署、数据库、媒体或真实账号数据。
+
+| 检查 | 命令/操作 | 结果 |
+| --- | --- | --- |
+| 改前基线 | gradlew.bat --no-daemon --console=plain testDebugUnitTest assembleDebug lintDebug | PASS；NAS 无凭据冒烟测试未启用 |
+| 完整构建 | gradlew.bat --no-daemon --console=plain testDebugUnitTest assembleDebug lintDebug assembleDebugAndroidTest | PASS，退出 0 |
+| 最终单测和 lint | gradlew.bat --no-daemon --console=plain testDebugUnitTest lintDebug | PASS；15 项通过，1 项 NasContractSmokeTest 因未设置专用环境变量而按既有条件跳过；lint 0 errors / 14 warnings |
+| 实际 Media3 音轨测试 | adb shell am instrument -w -e class com.fnvideo.app.PlaybackCompatibilityTest com.fnvideo.app.test/android.test.InstrumentationTestRunner | PASS，OK (4 tests)；不支持音轨、可用备用音轨、空/无音轨、超设备能力 |
+| 安装和登录状态 | adb install --no-streaming -r；am start -W | PASS，覆盖安装保留已有登录状态，冷启动成功；本次未重新执行登录流程 |
+| 数字音频输出 | scrcpy 4.1 --no-video --no-playback --no-window --no-control --audio-codec=raw --record=… --time-limit=8 | 7.915 秒双声道 PCM，峰值 99，323811 个非零样本；仅证明容器产生数字音频，不代表实体扬声器听音通过 |
+| 手动暂停 | 点击播放页暂停，录制约 2.923 秒 PCM | PASS，峰值 0 |
+| 保留手动暂停 | 暂停后 HOME，再返回应用并录音 | PASS，峰值 0 |
+| 播放切后台 | 恢复播放后 HOME，录音 | PASS，峰值 0 |
+| 快速换片 | 连续 3 次上滑后录制约 7.915 秒 | 冒烟执行完成，峰值 1；不将微弱非零信号当作可听声音或全部并发边界通过 |
+| 返回键离开 | BACK 后录音约 2.923 秒 | PASS（后台静音），峰值 0；Android 根 Activity 可转后台，因此不声称 onDestroy 已验收 |
+| APK 签名 | apksigner verify --verbose | PASS，v2 签名有效 |
+| Git 质量 | git diff --check | PASS |
+
+测试环境问题如实记录：最初把 Tracks 测试放在本地 JVM，遇到 Android TextUtils.isEmpty 未实现；已迁到真实设备 instrumentation，不添加 returnDefaultValues 或降低断言。复用现有 JUnit 4.13.2 到 androidTest，使用平台自带 runner。首次未限定 class 的旧 runner 扫描遇到可选平台类并长时间不返回，终止该次测试后用上表精确 class 命令完成 4 项测试。
+
+API 适配与测试由独立子代理实现并审查父代理播放改动，未发现阻塞问题。主代理核对 diff、构建、设备结果与安全边界。异步播放源仍沿用代数/页面/仓库身份检查，没有第二个播放器。
+
+交付：`dist/牛影随看-audio-fix-debug.apk`（忽略目录，不提交二进制）。SHA-256：`1960362B5AAC4A508345A2455017082B5968774F911B88A693FD2F0431D4B2C1`。原始本地验证材料仅在忽略目录；Git 不含私人片库、音频或会话内容。
+
+仍待：用户实体手机安装此 APK 后同片源听音，手机型号/音轨格式确认，耳机/蓝牙及焦点中断、真正 onDestroy 释放和长时间高频滑动。NAS 转码是否覆盖全部音频编码不作保证；本次不改 NAS 配置。下一步以实体手机实际结果继续定位，不重复把构建成功当修复成功。
