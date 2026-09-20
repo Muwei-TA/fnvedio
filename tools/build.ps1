@@ -32,7 +32,20 @@ $arguments += $Task
 Push-Location $rootPath
 try {
     & $gradlew @arguments
-    exit $LASTEXITCODE
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if ($Task -contains 'assembleDebug') {
+        $apkDirectory = Join-Path $rootPath 'app\build\outputs\apk\debug'
+        $metadata = Get-Content -Raw -LiteralPath (Join-Path $apkDirectory 'output-metadata.json') | ConvertFrom-Json
+        $artifacts = @($metadata.elements)
+        if ($artifacts.Count -ne 1) { throw 'Expected one debug APK in output metadata.' }
+        $artifact = $artifacts[0]
+        $distDirectory = Join-Path $rootPath 'dist'
+        New-Item -ItemType Directory -Force -Path $distDirectory | Out-Null
+        $apkName = "fnvideo-v$($artifact.versionName)-$($artifact.versionCode)-debug.apk"
+        Copy-Item -LiteralPath (Join-Path $apkDirectory $artifact.outputFile) -Destination (Join-Path $distDirectory $apkName)
+        Write-Host "APK: dist/$apkName"
+    }
+    exit 0
 }
 finally {
     Pop-Location

@@ -27,3 +27,26 @@
 
 
 项目接手入口：根目录 AGENTS.md，包含模块边界、构建命令、NAS 验证和安全规范。本次仅整理文档，不改变业务行为；验证采用路径核对与 git diff --check。
+
+## 手机无声修复（2026-09-20）
+
+授权：用户要求检查并修复实体安卓手机无声，并在每个里程碑 Git 提交。遵循本次用户提供的 AGENTS 中技能暂停时继续任务的指示；不将自审记为人工设计审批。
+路由：FIX / IN_PROGRESS / FOCUSED，播放器局部缺陷；不新增依赖或改变 MediaRepository 契约。依据 MainActivity.createPlayerListener 仅监听致命解码错误，未检测不受支持的音轨；手机未连接，具体片源根因待真机复验。
+设计：播放器检查已发现但不受支持的音轨，复用每页一次的 resolveCompatible；保留当前位置、用户暂停和异步代数保护；兼容失败明确提示。FnApi 保持 NAS 协议唯一归属，兼容音频采用 AAC 至多双声道。设置媒体音频属性、焦点和音量键的媒体流归属，不强制修改系统音量。
+专业技能：clean-architecture、a-philosophy-of-software-design、clean-code、code-complete。回滚按里程碑 revert，无数据库或 NAS 配置迁移。
+
+| 里程碑 | 验收 | 状态 |
+| --- | --- | --- |
+| M1 调查与设计 | 明确代码缺口、范围与回归计划 | DONE |
+| M2 修复与回归 | 音轨支持/无音轨/多音轨测试、兼容 AAC 声道契约；testDebugUnitTest、assembleDebug、lintDebug | DONE：单测、构建、lint 和 4 项设备音轨测试通过 |
+| M3 设备检查与交付 | 可用安卓环境安装/生命周期检查，列出真机未验项，产出 APK | DONE：本地交付完成，实体手机听音与完整 teardown 仍待验收 |
+
+验收必须区分代码缺口修复、容器验证和用户实体手机实际可听声音。不能用构建成功或容器 AudioTrack 证明实体手机修复成功。
+
+
+
+## 合并与版本交付（2026-09-20）
+
+用户授权合并到主分支，并要求 APK 带版本号。局部交付流程变更，不改变播放或 API 架构。版本提升为 1.0.1 / versionCode 2；构建脚本在 assembleDebug 成功后从输出元数据生成带版本的 dist 文件。保留 main 独立文档提交，合并后执行 testDebugUnitTest、assembleDebug、lintDebug，并核验 APK 内部版本及签名。长期规则在 README 开发节维护。
+
+合并/版本里程碑完成：main 合并保留双方有效文档；1.0.1 (2) APK 自动导出、包内版本与签名验证通过，构建/单测/lint 通过。后续交付遵循 README 中的版本递增和文件命名规则；实体手机听音验收仍待完成。

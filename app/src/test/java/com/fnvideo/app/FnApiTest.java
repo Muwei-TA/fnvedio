@@ -89,7 +89,7 @@ public class FnApiTest {
                 source.headers.get("User-Agent"));
     }
 
-    @Test public void compatiblePlaybackSkipsDirectLinkAndRequestsH264Aac() throws Exception {
+    @Test public void compatiblePlaybackCapsMultichannelAudioAtStereo() throws Exception {
         responses.put("/v/api/v1/play/info", "{\"code\":0,\"data\":{"
                 + "\"media_guid\":\"media-a\",\"video_guid\":\"video-a\","
                 + "\"audio_guid\":\"audio-a\",\"subtitle_guid\":\"subtitle-a\"}}");
@@ -98,7 +98,7 @@ public class FnApiTest {
                 + "\"video_stream\":{\"guid\":\"video-a\",\"codec_name\":\"hevc\","
                 + "\"profile\":\"Main 10\"},"
                 + "\"audio_streams\":[{\"guid\":\"audio-a\",\"codec_name\":\"aac\","
-                + "\"channels\":2,\"is_default\":true}],"
+                + "\"channels\":6,\"is_default\":true}],"
                 + "\"subtitle_streams\":[{\"guid\":\"subtitle-a\",\"is_default\":true}],"
                 + "\"qualities\":[{\"resolution\":\"1080p\",\"bitrate\":3000000}]}}");
         responses.put("/v/api/v1/play/play", "{\"code\":0,\"data\":{"
@@ -128,6 +128,69 @@ public class FnApiTest {
         assertEquals("audio-a", playRequest.getString("audio_guid"));
         assertEquals("subtitle-a", playRequest.getString("subtitle_guid"));
         assertEquals(2, playRequest.getInt("channels"));
+    }
+
+    @Test public void compatiblePlaybackPreservesMonoAudio() throws Exception {
+        responses.put("/v/api/v1/play/info", "{\"code\":0,\"data\":{"
+                + "\"media_guid\":\"media-mono\",\"video_guid\":\"video-mono\","
+                + "\"audio_guid\":\"audio-mono\"}}");
+        responses.put("/v/api/v1/stream", "{\"code\":0,\"data\":{"
+                + "\"video_stream\":{\"guid\":\"video-mono\",\"codec_name\":\"hevc\"},"
+                + "\"audio_streams\":[{\"guid\":\"audio-mono\",\"codec_name\":\"opus\","
+                + "\"channels\":1,\"is_default\":true}],"
+                + "\"qualities\":[{\"resolution\":\"720p\",\"bitrate\":1000000}]}}");
+        responses.put("/v/api/v1/play/play", "{\"code\":0,\"data\":{"
+                + "\"play_link\":\"https://storage.example/transcoded-mono.mp4\"}}");
+
+        MediaRepository.Video video = new MediaRepository.Video();
+        video.id = "mono";
+        api.resolveCompatible(video);
+
+        JSONObject playRequest = new JSONObject(bodies.get("/v/api/v1/play/play"));
+        assertEquals("aac", playRequest.getString("audio_encoder"));
+        assertEquals("audio-mono", playRequest.getString("audio_guid"));
+        assertEquals(1, playRequest.getInt("channels"));
+    }
+
+    @Test public void compatiblePlaybackPreservesNoAudioAsZeroChannels() throws Exception {
+        responses.put("/v/api/v1/play/info", "{\"code\":0,\"data\":{"
+                + "\"media_guid\":\"media-silent\",\"video_guid\":\"video-silent\"}}");
+        responses.put("/v/api/v1/stream", "{\"code\":0,\"data\":{"
+                + "\"video_stream\":{\"guid\":\"video-silent\",\"codec_name\":\"hevc\"},"
+                + "\"qualities\":[{\"resolution\":\"720p\",\"bitrate\":1000000}]}}");
+        responses.put("/v/api/v1/play/play", "{\"code\":0,\"data\":{"
+                + "\"play_link\":\"https://storage.example/transcoded-silent.mp4\"}}");
+
+        MediaRepository.Video video = new MediaRepository.Video();
+        video.id = "silent";
+        api.resolveCompatible(video);
+
+        JSONObject playRequest = new JSONObject(bodies.get("/v/api/v1/play/play"));
+        assertEquals("", playRequest.getString("audio_encoder"));
+        assertEquals("", playRequest.getString("audio_guid"));
+        assertEquals(0, playRequest.getInt("channels"));
+    }
+
+    @Test public void normalPlaybackPreservesSourceAudioChannels() throws Exception {
+        responses.put("/v/api/v1/play/info", "{\"code\":0,\"data\":{"
+                + "\"media_guid\":\"media-normal\",\"video_guid\":\"video-normal\","
+                + "\"audio_guid\":\"audio-normal\"}}");
+        responses.put("/v/api/v1/stream", "{\"code\":0,\"data\":{"
+                + "\"video_stream\":{\"guid\":\"video-normal\",\"codec_name\":\"hevc\"},"
+                + "\"audio_streams\":[{\"guid\":\"audio-normal\",\"codec_name\":\"eac3\","
+                + "\"channels\":6,\"is_default\":true}],"
+                + "\"qualities\":[{\"resolution\":\"1080p\",\"bitrate\":2000000}]}}");
+        responses.put("/v/api/v1/play/play", "{\"code\":0,\"data\":{"
+                + "\"play_link\":\"https://storage.example/original-normal.mp4\"}}");
+
+        MediaRepository.Video video = new MediaRepository.Video();
+        video.id = "normal";
+        api.resolve(video);
+
+        JSONObject playRequest = new JSONObject(bodies.get("/v/api/v1/play/play"));
+        assertEquals("eac3", playRequest.getString("audio_encoder"));
+        assertEquals("audio-normal", playRequest.getString("audio_guid"));
+        assertEquals(6, playRequest.getInt("channels"));
     }
 
     @Test public void authFailureRemainsDistinguishableFromNetworkFailure() throws Exception {
