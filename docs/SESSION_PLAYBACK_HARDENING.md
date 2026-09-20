@@ -17,6 +17,12 @@ The latest main-branch documentation deletions are retained.
 - `SessionStore.changeServer` retains a token only for the same origin. Changing
   scheme, host or effective port clears the old token and requires a new login.
   Invalid legacy configuration is cleared at startup rather than crashing in a loop.
+- `LoginActivity` uses the same canonical address policy. When the user changes origin
+  within the login screen, it destroys the previous WebView document, clears cookies
+  and WebStorage, and only then loads the new origin. Connection and token polling
+  are gated while asynchronous cleanup runs; callbacks are invalidated on teardown.
+  This also covers a port change on the same host: cookies themselves are not
+  isolated by port (RFC 6265 section 8.5, https://www.rfc-editor.org/rfc/rfc6265#section-8.5).
 - `PlaybackSession` separates selected media from media actually loaded into ExoPlayer.
   Each selection/retry has a distinct ticket, even for A -> B -> A. Resume writes use
   the captured loaded server/media identity, never the currently visible card.
@@ -47,15 +53,21 @@ retention, playback ownership, stale tickets, pagination bounds and typed errors
 errors, HTTP 401/403 and misleading message text. Existing API, feed, transport and
 audio compatibility tests are retained.
 
+`ServerAddressLoginTest` adds seven policy tests for supported login entry paths,
+default ports, host casing, cross-port and scheme isolation, host lookalikes,
+IPv6/idempotence, and rejecting query/fragment/path-bearing settings. These are
+JVM policy tests, not proof of real WebView cookie isolation or Keystore behavior.
+
 Run the existing project gates:
 
 ```sh
 ./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The repository workflow runs these gates for a pull request to main. CI results and
-the exact checked commit must be recorded in the PR; writing this document does not
-assert that an Android build or a device test has passed.
+The repository workflow runs these gates on `fix/**` pushes and pull requests to main.
+CI results and the exact checked commit are authoritative; writing this document does
+not assert that an Android build or a device test has passed. Source snapshots, test
+and lint reports, and the debug APK are retained as workflow artifacts.
 
 ## Device acceptance still required
 
@@ -72,5 +84,9 @@ assert that an Android build or a device test has passed.
 6. Expire the NAS session during page loading, library selection and source resolution;
    verify that login is offered, while a storage-link HTTP 403 remains a playback
    retry rather than incorrectly clearing the NAS session.
+7. In the login screen, use synthetic cookies on two test servers sharing a hostname
+   but using different ports. Switch origins before login completes. The destination
+   must receive no previous login cookie, no stale token result may be emitted, and
+   repeated connections/back navigation/process recreation must remain usable.
 
 No credentials, real media snapshots or NAS modifications are part of these checks.
