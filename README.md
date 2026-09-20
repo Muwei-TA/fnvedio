@@ -6,7 +6,7 @@
 
 ## 安装与使用
 
-1. 将 `dist/牛影随看-debug.apk` 传到 Android 8.0 或以上手机并安装。
+1. 将 `dist/fnvideo-v1.0.1-2-debug.apk` 传到 Android 8.0 或以上手机并安装。
 2. 手机连接能访问 NAS 的 Wi-Fi，打开应用，点击登录。
 3. 默认服务地址是 `http://192.0.2.1:5666`，使用飞牛官方页面登录。
 4. 上滑下一条，下滑上一条；点击画面暂停/播放；拖动进度；“完整/铺满”切换显示方式。
@@ -28,7 +28,7 @@ Android SDK / Build Tools 35、JDK 17 或兼容版本、Gradle 8.9、AGP 8.7.3�
 .\tools\build.ps1 -Task testDebugUnitTest,assembleDebug,lintDebug
 ```
 
-调试 APK 原始输出：`app/build/outputs/apk/debug/app-debug.apk`。LAN 签名检查可在构建前设置当前进程的 `FNVIDEO_TEST_SERVER=http://192.0.2.1:5666`；该检查不携带凭据，不读取私人片库。
+包含 `assembleDebug` 的构建脚本调用成功后，自动从 APK 元数据读取版本，导出 `dist/fnvideo-v<versionName>-<versionCode>-debug.apk`。每次交付递增 `app/build.gradle` 的 `versionCode` 并更新 `versionName`，不交付无版本号文件。调试 APK 原始输出仍为 `app/build/outputs/apk/debug/app-debug.apk`。LAN 签名检查可在构建前设置当前进程的 `FNVIDEO_TEST_SERVER=http://192.0.2.1:5666`；该检查不携带凭据，不读取私人片库。
 
 测试和 lint 详情见 [验证记录](docs/VERIFICATION.md)，任务状态见 [实施计划](docs/PLAN.md)。
 

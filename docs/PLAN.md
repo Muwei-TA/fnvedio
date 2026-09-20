@@ -41,3 +41,7 @@
 验收必须区分代码缺口修复、容器验证和用户实体手机实际可听声音。不能用构建成功或容器 AudioTrack 证明实体手机修复成功。
 
 
+
+## 合并与版本交付（2026-09-20）
+
+用户授权合并到主分支，并要求 APK 带版本号。局部交付流程变更，不改变播放或 API 架构。版本提升为 1.0.1 / versionCode 2；构建脚本在 assembleDebug 成功后从输出元数据生成带版本的 dist 文件。保留 main 独立文档提交，合并后执行 testDebugUnitTest、assembleDebug、lintDebug，并核验 APK 内部版本及签名。长期规则在 README 开发节维护。
