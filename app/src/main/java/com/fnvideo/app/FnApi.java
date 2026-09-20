@@ -5,13 +5,12 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
@@ -19,8 +18,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -58,7 +55,7 @@ public final class FnApi implements MediaRepository {
      * @param token raw value of the {@code Trim-MC-token} cookie
      */
     public FnApi(String baseUrl, String token) {
-        this.baseUrl = normalizeBase(baseUrl);
+        this.baseUrl = ServerAddress.normalize(baseUrl) + "/v";
         this.token = token == null ? "" : token.trim();
         // The web client sends a FingerprintJS visitorId as the stream "ip".
         // Keep a per-client opaque value without persisting or exposing it.
@@ -264,21 +261,7 @@ public final class FnApi implements MediaRepository {
     }
 
     private boolean sameOrigin(String value) {
-        try {
-            URI expected = new URI(baseUrl);
-            URI actual = new URI(value);
-            int expectedPort = expected.getPort() < 0 ? defaultPort(expected.getScheme()) : expected.getPort();
-            int actualPort = actual.getPort() < 0 ? defaultPort(actual.getScheme()) : actual.getPort();
-            return expected.getScheme().equalsIgnoreCase(actual.getScheme())
-                    && expected.getHost().equalsIgnoreCase(actual.getHost())
-                    && expectedPort == actualPort;
-        } catch (Exception ignored) {
-            return false;
-        }
-    }
-
-    private static int defaultPort(String scheme) {
-        return "https".equalsIgnoreCase(scheme) ? 443 : 80;
+        return ServerAddress.sameOrigin(baseUrl, value);
     }
 
     private String rangeUrl(String mediaGuid, String playLink) throws Exception {
@@ -319,31 +302,32 @@ public final class FnApi implements MediaRepository {
         String authx = authx(method, url, queryText, bodyText);
 
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        connection.setReadTimeout(READ_TIMEOUT_MS);
-        connection.setInstanceFollowRedirects(false);
-        connection.setRequestMethod(method);
-        connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("X-Trim-Client", CLIENT);
-        connection.setRequestProperty("X-Trim-Client-Version", CLIENT_VERSION);
-        // The production bundle sends authx as a header, not as URL query
-        // parameters. Keeping it in the header also preserves GET q exactly.
-        connection.setRequestProperty("authx", authx);
-        if (!token.isEmpty()) {
-            // This is deliberately the raw Trim-MC-token value, without Bearer.
-            connection.setRequestProperty("Authorization", token);
-        }
-        if (!bodyText.isEmpty()) {
-            connection.setDoOutput(true);
-            connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-            byte[] bytes = bodyText.getBytes(StandardCharsets.UTF_8);
-            connection.setFixedLengthStreamingMode(bytes.length);
-            connection.getOutputStream().write(bytes);
-        }
-
         int status;
         String response;
         try {
+            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            connection.setReadTimeout(READ_TIMEOUT_MS);
+            connection.setInstanceFollowRedirects(false);
+            connection.setRequestMethod(method);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("X-Trim-Client", CLIENT);
+            connection.setRequestProperty("X-Trim-Client-Version", CLIENT_VERSION);
+            // The production bundle sends authx as a header, not as URL query
+            // parameters. Keeping it in the header also preserves GET q exactly.
+            connection.setRequestProperty("authx", authx);
+            if (!token.isEmpty()) {
+                // This is deliberately the raw Trim-MC-token value, without Bearer.
+                connection.setRequestProperty("Authorization", token);
+            }
+            if (!bodyText.isEmpty()) {
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+                byte[] bytes = bodyText.getBytes(StandardCharsets.UTF_8);
+                connection.setFixedLengthStreamingMode(bytes.length);
+                try (OutputStream output = connection.getOutputStream()) {
+                    output.write(bytes);
+                }
+            }
             status = connection.getResponseCode();
             response = readBody(status >= 400 ? connection.getErrorStream() : connection.getInputStream());
         } finally {
@@ -691,42 +675,12 @@ public final class FnApi implements MediaRepository {
         return "";
     }
 
-    private static String normalizeBase(String input) {
-        String value = safe(input);
-        if (value.isEmpty()) {
-            throw new IllegalArgumentException("NAS server URL is empty");
-        }
-        while (value.endsWith("/")) {
-            value = value.substring(0, value.length() - 1);
-        }
-        try {
-            URI uri = new URI(value);
-            String scheme = uri.getScheme();
-            if (!("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
-                    || uri.getHost() == null) {
-                throw new IllegalArgumentException("NAS server URL must be http or https");
-            }
-            String path = uri.getPath() == null ? "" : uri.getPath();
-            if (path.endsWith("/api/v1")) {
-                value = value.substring(0, value.length() - "/api/v1".length());
-            } else if (path.endsWith("/api/v2")) {
-                value = value.substring(0, value.length() - "/api/v2".length());
-            }
-            if (!value.endsWith("/v")) {
-                value += "/v";
-            }
-            return value;
-        } catch (URISyntaxException error) {
-            throw new IllegalArgumentException("Invalid NAS server URL", error);
-        }
-    }
-
     private static String safe(String value) {
         return value == null ? "" : value.trim();
     }
 
     /** API failure without response bodies or credentials. */
-    public static final class FnApiException extends IOException {
+    public static final class FnApiException extends RepositoryFailure {
         public final int httpStatus;
         public final int apiCode;
 
@@ -739,9 +693,15 @@ public final class FnApi implements MediaRepository {
         }
 
         FnApiException(String message, int httpStatus, int apiCode, Throwable cause) {
-            super(message, cause);
+            super(classify(httpStatus, apiCode), message, cause);
             this.httpStatus = httpStatus;
             this.apiCode = apiCode;
+        }
+
+        private static Kind classify(int httpStatus, int apiCode) {
+            if (httpStatus == 401 || apiCode == -2) return Kind.AUTHENTICATION_REQUIRED;
+            if (httpStatus == 403) return Kind.PERMISSION_DENIED;
+            return Kind.OTHER;
         }
     }
 }

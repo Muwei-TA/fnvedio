@@ -40,7 +40,6 @@ import androidx.recyclerview.widget.RecyclerView;
 import androidx.viewpager2.widget.ViewPager2;
 
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -60,9 +59,11 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private static final int CARD = Color.rgb(20, 23, 30);
     private static final long RESUME_MIN_MS = 3_000L;
     private static final long RESUME_END_MARGIN_MS = 5_000L;
+    private static final int MAX_HOLDER_BIND_ATTEMPTS = 20;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Runnable progressTicker = this::updateActiveProgress;
+    private final PlaybackSession playbackSession = new PlaybackSession();
 
     private ExecutorService networkExecutor;
     private Future<?> libraryRequest;
@@ -85,14 +86,15 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private TextView libraryButton;
     private TextView searchButton;
     private TextView settingsButton;
+    private TextView paginationAction;
 
     private FeedAdapter.VideoViewHolder activeHolder;
     private int activePosition = RecyclerView.NO_POSITION;
     private long libraryGeneration;
-    private int playbackGeneration;
     private boolean loadingNextPage;
     private boolean firstPagePending;
     private String serverBase = "";
+    private String legacyResumeBase = "";
     private String sessionToken = "";
     private String currentQuery = "";
     private String currentLibraryId = "";
@@ -124,10 +126,9 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
                 .setHandleAudioBecomingNoisy(true)
                 .build();
         player.addListener(createPlayerListener());
-        mainHandler.post(progressTicker);
 
         if (hasSession()) {
-            loadLibrary("", false);
+            loadLibrary("");
         } else {
             showSignedOut();
         }
@@ -175,6 +176,12 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
 
         buildMessageOverlay();
         buildTopBar();
+        paginationAction = pillButton("", ACCENT);
+        paginationAction.setVisibility(View.GONE);
+        FrameLayout.LayoutParams paginationParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        paginationParams.topMargin = dp(70);
+        root.addView(paginationAction, paginationParams);
         setContentView(root);
         root.requestApplyInsets();
     }
@@ -262,11 +269,12 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         return new Player.Listener() {
             @Override
             public void onTracksChanged(@NonNull Tracks tracks) {
-                if (activeHolder == null || !PlaybackCompatibility.hasUnsupportedAudio(tracks)) {
+                if (!hasLoadedPlayback() || !PlaybackCompatibility.hasUnsupportedAudio(tracks)) {
                     return;
                 }
                 if (!tryCompatiblePlayback()) {
-                    player.stop();
+                    saveResumePosition(false);
+                    stopPlayer();
                     activeHolder.showError("当前设备无法播放此音轨，兼容播放也未成功。请检查 NAS 转码能力或换一部影片。");
                 }
             }
@@ -274,7 +282,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             @Override
             public void onPlaybackStateChanged(int state) {
                 FeedAdapter.VideoViewHolder holder = activeHolder;
-                if (holder == null) {
+                if (holder == null || !hasLoadedPlayback()) {
                     return;
                 }
                 if (state == Player.STATE_BUFFERING) {
@@ -291,15 +299,22 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             @Override
             public void onIsPlayingChanged(boolean isPlaying) {
                 FeedAdapter.VideoViewHolder holder = activeHolder;
-                if (holder != null) {
+                if (holder != null && hasLoadedPlayback()) {
                     holder.setPlaying(isPlaying);
+                }
+            }
+
+            @Override
+            public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+                if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY) {
+                    userPaused = true;
                 }
             }
 
             @Override
             public void onPlayerError(@NonNull PlaybackException error) {
                 FeedAdapter.VideoViewHolder holder = activeHolder;
-                if (holder == null) {
+                if (holder == null || !hasLoadedPlayback()) {
                     return;
                 }
                 if ((isDecodingError(error)
@@ -313,8 +328,8 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     }
 
     private boolean tryCompatiblePlayback() {
-        if (compatibilityAttempted || destroyed || activeHolder == null
-                || activePosition == RecyclerView.NO_POSITION) {
+        if (compatibilityAttempted || destroyed || !hasLoadedPlayback()
+                || activeHolder == null || activePosition == RecyclerView.NO_POSITION) {
             return false;
         }
         compatibilityAttempted = true;
@@ -324,8 +339,16 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     }
 
     private void restoreSession() {
-        serverBase = normalizeBase(SessionStore.base(this));
-        sessionToken = safe(SessionStore.token(this));
+        legacyResumeBase = safe(SessionStore.base(this));
+        try {
+            serverBase = ServerAddress.normalize(legacyResumeBase);
+            sessionToken = safe(SessionStore.token(this));
+        } catch (IllegalArgumentException invalidAddress) {
+            SessionStore.reset(this);
+            serverBase = "";
+            sessionToken = "";
+            legacyResumeBase = "";
+        }
     }
 
     private boolean hasSession() {
@@ -336,34 +359,29 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         repository = hasSession() ? new FnApi(serverBase, sessionToken) : null;
     }
 
-    private void loadLibrary(String query, boolean keepCurrent) {
+    private void loadLibrary(String query) {
         if (!hasSession()) {
             showSignedOut();
             return;
         }
         currentQuery = safe(query);
         saveResumePosition(false);
-        final long generation = feedState.reset();
-        libraryGeneration = generation;
+        libraryGeneration = feedState.reset();
         loadingNextPage = false;
         firstPagePending = true;
         cancel(libraryRequest);
         cancel(librariesRequest);
         cancel(playbackRequest);
-        playbackGeneration++;
-
-        if (!keepCurrent) {
-            detachPlayer();
-            adapter.setVideos(Collections.emptyList());
-            activePosition = RecyclerView.NO_POSITION;
-            activeHolder = null;
-            pager.setVisibility(View.GONE);
-        }
-        if (adapter.getItemCount() == 0) {
-            showMessage("正在连接片库", "正在从 NAS 获取真实媒体列表，请稍候。", true,
-                    null, null);
-        }
-        requestNextPage(generation);
+        detachPlayer();
+        activePosition = RecyclerView.NO_POSITION;
+        activeHolder = null;
+        adapter.setVideos(Collections.emptyList());
+        pager.setVisibility(View.GONE);
+        paginationAction.setVisibility(View.GONE);
+        setBrowseButtonsEnabled(false);
+        showMessage("正在连接片库", "正在从 NAS 获取真实媒体列表，请稍候。", true,
+                null, null);
+        requestNextPage(libraryGeneration);
     }
 
     private void requestNextPage(long generation) {
@@ -372,6 +390,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             return;
         }
         loadingNextPage = true;
+        paginationAction.setVisibility(View.GONE);
         final String cursor = feedState.nextCursor();
         final String requestQuery = currentQuery;
         final String requestLibraryId = currentLibraryId;
@@ -398,35 +417,36 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
 
     private void onPageLoaded(long generation, MediaRepository.Page page) {
         loadingNextPage = false;
-        if (page == null) {
-            onLibraryFailed(new IllegalStateException("服务端返回了空分页"));
-            return;
-        }
-        if (!feedState.append(generation, page)) {
+        try {
+            if (!feedState.append(generation, page)) {
+                return;
+            }
+        } catch (IllegalArgumentException | IllegalStateException invalidPage) {
+            onLibraryFailed(invalidPage);
             return;
         }
         List<MediaRepository.Video> values = feedState.items();
         if (firstPagePending) {
             firstPagePending = false;
-            saveResumePosition(false);
-            detachPlayer();
-            activePosition = RecyclerView.NO_POSITION;
-            activeHolder = null;
             adapter.setVideos(values);
-        } else if (page != null) {
-            adapter.appendVideos(values);
+        } else if (values.size() > adapter.getItemCount()) {
+            adapter.appendVideos(values.subList(adapter.getItemCount(), values.size()));
         }
         if (values.isEmpty()) {
-            if (feedState.hasMore()) {
+            setBrowseButtonsEnabled(true);
+            if (feedState.shouldAutoLoad(0)) {
                 showMessage("正在继续加载片库", "当前页没有可播放条目，正在请求下一页。",
                         true, null, null);
                 requestNextPage(generation);
+            } else if (feedState.hasMore()) {
+                showMessage("暂未发现可播放视频", "连续多页没有新视频，已暂停自动加载。",
+                        false, "继续加载", this::continuePagination);
             } else {
                 pager.setVisibility(View.GONE);
                 showMessage("片库暂无结果", currentQuery.isEmpty()
                                 ? "服务端返回了空片库。请确认账号有媒体权限。"
                                 : "没有匹配“" + currentQuery + "”的媒体。",
-                        false, "重新加载", () -> loadLibrary(currentQuery, false));
+                        false, "重新加载", () -> loadLibrary(currentQuery));
             }
             return;
         }
@@ -434,24 +454,57 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         pager.setVisibility(View.VISIBLE);
         if (activePosition == RecyclerView.NO_POSITION) {
             pager.setCurrentItem(0, false);
-            pager.post(() -> activatePage(0));
+            pager.post(() -> {
+                if (!destroyed && generation == libraryGeneration && pager.getCurrentItem() == 0) {
+                    activatePage(0);
+                }
+            });
         }
+        int position = Math.max(0, activePosition);
+        if (feedState.shouldAutoLoad(position)) {
+            requestNextPage(generation);
+        } else if (feedState.hasMore() && feedState.isNearEnd(position)) {
+            showPaginationAction("后续页面暂无新视频，点此继续加载", this::continuePagination);
+        }
+    }
+
+    private void continuePagination() {
+        feedState.restartEmptyPageScan();
+        if (adapter.getItemCount() == 0) {
+            showMessage("正在继续加载片库", "正在请求后续页面。", true, null, null);
+        }
+        requestNextPage(libraryGeneration);
+    }
+
+    private void showPaginationAction(String text, Runnable action) {
+        paginationAction.setText(text);
+        paginationAction.setPadding(dp(14), 0, dp(14), 0);
+        paginationAction.setOnClickListener(view -> action.run());
+        paginationAction.setVisibility(View.VISIBLE);
     }
 
     private void onLibraryFailed(Exception error) {
         loadingNextPage = false;
+        if (handleAuthenticationFailure(error)) {
+            return;
+        }
+        setBrowseButtonsEnabled(hasSession());
         String message = actionableLibraryError(error);
         if (adapter.getItemCount() == 0) {
             pager.setVisibility(View.GONE);
             showMessage("片库加载失败", message, false, "重新加载",
-                    () -> loadLibrary(currentQuery, false));
+                    () -> loadLibrary(currentQuery));
         } else {
             Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+            showPaginationAction("后续页面加载失败，点此重试", this::continuePagination);
         }
     }
 
     private void activatePage(int position) {
-        if (destroyed || position < 0 || position >= adapter.getItemCount()) {
+        if (destroyed || firstPagePending || !hasSession()
+                || position < 0 || position >= adapter.getItemCount()
+                || position != pager.getCurrentItem()
+                || pager.getScrollState() != ViewPager2.SCROLL_STATE_IDLE) {
             return;
         }
         maybeLoadNextPage(position);
@@ -460,29 +513,42 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         }
         saveResumePosition(false);
         cancel(playbackRequest);
-        playbackGeneration++;
         detachPlayer();
         activePosition = position;
         compatibilityAttempted = false;
         activeHolder = null;
         userPaused = false;
         lastSavedPosition = -1L;
-        pager.post(() -> {
-            if (destroyed || activePosition != position) {
-                return;
+        PlaybackSession.Ticket ticket = playbackSession.select(
+                serverBase, adapter.getVideo(position).id, libraryGeneration);
+        pager.post(() -> bindSelectedPage(position, ticket, 0));
+    }
+
+    private void bindSelectedPage(int position, PlaybackSession.Ticket ticket, int attempt) {
+        if (destroyed || !playbackSession.isCurrent(ticket)
+                || ticket.feedGeneration != libraryGeneration || activePosition != position
+                || pager.getCurrentItem() != position
+                || pager.getScrollState() != ViewPager2.SCROLL_STATE_IDLE) {
+            return;
+        }
+        FeedAdapter.VideoViewHolder holder = findHolder(position);
+        if (holder == null || holder.getVideo() == null || !ticket.videoId.equals(holder.getVideo().id)) {
+            if (attempt < MAX_HOLDER_BIND_ATTEMPTS) {
+                pager.postDelayed(() -> bindSelectedPage(position, ticket, attempt + 1), 80L);
+            } else {
+                showMessage("播放页面尚未就绪", "请重试或切换媒体库。", false, "重试", () -> {
+                    hideMessage();
+                    activatePage(pager.getCurrentItem());
+                });
             }
-            FeedAdapter.VideoViewHolder holder = findHolder(position);
-            if (holder == null) {
-                pager.postDelayed(() -> activatePage(position), 80L);
-                return;
-            }
-            activeHolder = holder;
-            preparePlayback(position, holder);
-        });
+            return;
+        }
+        activeHolder = holder;
+        preparePlayback(position, holder, false);
     }
 
     private void maybeLoadNextPage(int position) {
-        if (adapter.getItemCount() - position <= 3) {
+        if (feedState.shouldAutoLoad(position)) {
             requestNextPage(libraryGeneration);
         }
     }
@@ -498,11 +564,8 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
                 ? (FeedAdapter.VideoViewHolder) holder : null;
     }
 
-    private void preparePlayback(int position, FeedAdapter.VideoViewHolder holder) {
-        preparePlayback(position, holder, false);
-    }
-
     private void preparePlayback(int position, FeedAdapter.VideoViewHolder holder, boolean compatible) {
+        saveResumePosition(false);
         preparePlayback(position, holder, compatible, readResumePosition(adapter.getVideo(position)));
     }
 
@@ -510,13 +573,16 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
                                  boolean compatible, long resumePosition) {
         MediaRepository.Video video = adapter.getVideo(position);
         MediaRepository requestRepository = repository;
-        if (video == null || !hasSession() || requestRepository == null) {
-            holder.showError("登录状态或媒体信息已失效，请回到设置重新连接。 ");
+        if (destroyed || holder != activeHolder || position != activePosition
+                || video == null || !hasSession() || requestRepository == null) {
             return;
         }
-        final int generation = ++playbackGeneration;
+        saveResumePosition(false);
         cancel(playbackRequest);
-        player.stop();
+        final PlaybackSession.Ticket ticket = playbackSession.select(serverBase, video.id, libraryGeneration);
+        stopPlayer();
+        holder.setSeeking(false);
+        holder.setSeekEnabled(false);
         holder.showLoading();
         holder.setFitMode(zoomMode);
         playbackRequest = networkExecutor.submit(() -> {
@@ -524,17 +590,14 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
                 MediaRepository.Source source = compatible
                         ? requestRepository.resolveCompatible(video) : requestRepository.resolve(video);
                 mainHandler.post(() -> {
-                    if (!destroyed && generation == playbackGeneration
-                            && position == activePosition && activeHolder == holder
-                            && repository == requestRepository) {
-                        attachPlayback(holder, source, resumePosition);
+                    if (isCurrentPlayback(ticket, position, holder, requestRepository)) {
+                        attachPlayback(holder, source, resumePosition, ticket);
                     }
                 });
             } catch (Exception error) {
                 mainHandler.post(() -> {
-                    if (!destroyed && generation == playbackGeneration
-                            && position == activePosition && activeHolder == holder
-                            && repository == requestRepository) {
+                    if (isCurrentPlayback(ticket, position, holder, requestRepository)
+                            && !handleAuthenticationFailure(error)) {
                         holder.showError(actionablePlaybackError(error));
                     }
                 });
@@ -542,48 +605,76 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         });
     }
 
+    private boolean isCurrentPlayback(PlaybackSession.Ticket ticket, int position,
+                                      FeedAdapter.VideoViewHolder holder, MediaRepository requestRepository) {
+        return !destroyed && playbackSession.isCurrent(ticket)
+                && ticket.feedGeneration == libraryGeneration && position == activePosition
+                && activeHolder == holder && holder.getVideo() != null
+                && ticket.videoId.equals(holder.getVideo().id) && repository == requestRepository;
+    }
+
     private void attachPlayback(FeedAdapter.VideoViewHolder holder, MediaRepository.Source source,
-                                long resumePosition) {
+                                long resumePosition, PlaybackSession.Ticket ticket) {
         try {
-            if (activeHolder != holder) {
+            if (activeHolder != holder || !playbackSession.isCurrent(ticket)) {
                 return;
             }
-            // Keep NAS auth headers on the resolved origin. Cross-protocol redirects
-            // are rejected so a signed media request cannot forward them elsewhere.
-            MediaItem.Builder itemBuilder = new MediaItem.Builder().setUri(Uri.parse(source.url));
+            // Both transport credentials and resume ownership use the captured server identity.
+            MediaItem.Builder itemBuilder = new MediaItem.Builder()
+                    .setMediaId(ticket.videoId).setUri(Uri.parse(source.url));
             if (!safe(source.mimeType).isEmpty()) {
                 itemBuilder.setMimeType(source.mimeType);
             }
             MediaItem item = itemBuilder.build();
-            player.setMediaSource(new DefaultMediaSourceFactory(PlaybackDataSource.forSource(source, serverBase))
-                    .createMediaSource(item));
+            player.setMediaSource(new DefaultMediaSourceFactory(
+                    PlaybackDataSource.forSource(source, ticket.serverOrigin)).createMediaSource(item));
+            if (resumePosition > 0) {
+                player.seekTo(resumePosition);
+            }
+            playbackSession.markLoaded(ticket);
             holder.playerView.setPlayer(player);
             holder.setFitMode(zoomMode);
             holder.setSeekEnabled(false);
             holder.showLoading();
             player.prepare();
-            if (resumePosition > 0) {
-                player.seekTo(resumePosition);
-            }
             if (foreground && !userPaused) {
                 player.play();
             }
         } catch (Exception error) {
+            stopPlayer();
             holder.showError(actionablePlaybackError(error));
         }
     }
 
-    private void detachPlayer() {
-        if (activeHolder != null && player != null) {
-            activeHolder.playerView.setPlayer(null);
-        }
+    private boolean hasLoadedPlayback() {
+        PlaybackSession.Ticket loaded = playbackSession.loaded();
+        MediaItem item = player == null ? null : player.getCurrentMediaItem();
+        return loaded != null && item != null && loaded.videoId.equals(item.mediaId);
+    }
+
+    private void stopPlayer() {
+        // stop() alone retains the previous timeline/position and playWhenReady.
+        playbackSession.clearLoaded();
         if (player != null) {
+            player.pause();
             player.stop();
+            player.clearMediaItems();
         }
     }
 
+    private void detachPlayer() {
+        playbackSession.invalidate();
+        if (activeHolder != null && player != null) {
+            activeHolder.playerView.setPlayer(null);
+        }
+        stopPlayer();
+    }
+
     private void updateActiveProgress() {
-        if (!destroyed && activeHolder != null && player != null) {
+        if (destroyed || !foreground) {
+            return;
+        }
+        if (activeHolder != null && hasLoadedPlayback()) {
             long position = player.getCurrentPosition();
             long duration = player.getDuration();
             if (activeHolder.isSeeking()) {
@@ -592,7 +683,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             } else {
                 activeHolder.updateProgress(position, duration);
             }
-            if (player.isPlaying() && position - lastSavedPosition >= 5_000L) {
+            if (player.isPlaying() && Math.abs(position - lastSavedPosition) >= 5_000L) {
                 saveResumePosition(false);
             }
         }
@@ -600,16 +691,13 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     }
 
     private void saveResumePosition(boolean ended) {
-        if (player == null || activeHolder == null || activeHolder.getVideo() == null) {
+        if (!hasLoadedPlayback()) {
             return;
         }
-        String id = safe(activeHolder.getVideo().id);
-        if (id.isEmpty()) {
-            return;
-        }
+        PlaybackSession.Ticket loaded = playbackSession.loaded();
         long position = player.getCurrentPosition();
         long duration = player.getDuration();
-        String key = resumeKey(id);
+        String key = loaded.resumeKey();
         if (ended || (duration > 0 && duration != C.TIME_UNSET
                 && position >= duration - RESUME_END_MARGIN_MS)) {
             resumePreferences.edit().remove(key).apply();
@@ -619,6 +707,9 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         if (position >= RESUME_MIN_MS) {
             resumePreferences.edit().putLong(key, position).apply();
             lastSavedPosition = position;
+        } else {
+            resumePreferences.edit().remove(key).apply();
+            lastSavedPosition = position;
         }
     }
 
@@ -626,16 +717,21 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         if (video == null || safe(video.id).isEmpty()) {
             return 0L;
         }
-        return resumePreferences.getLong(resumeKey(video.id), 0L);
-    }
-
-    private String resumeKey(String videoId) {
-        return "position:" + serverBase + ":" + videoId;
+        String key = "position:" + serverBase + ":" + video.id;
+        if (!resumePreferences.contains(key) && !legacyResumeBase.equals(serverBase)
+                && ServerAddress.sameOrigin(legacyResumeBase, serverBase)) {
+            String legacyKey = "position:" + legacyResumeBase + ":" + video.id;
+            if (resumePreferences.contains(legacyKey)) {
+                long position = resumePreferences.getLong(legacyKey, 0L);
+                resumePreferences.edit().putLong(key, position).remove(legacyKey).apply();
+            }
+        }
+        return resumePreferences.getLong(key, 0L);
     }
 
     @Override
     public void onPageTapped(FeedAdapter.VideoViewHolder holder) {
-        if (holder != activeHolder || player == null) {
+        if (holder != activeHolder || !hasLoadedPlayback() || player.getPlayerError() != null) {
             return;
         }
         if (player.getPlayWhenReady()) {
@@ -646,7 +742,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
                 player.seekTo(0L);
             }
             userPaused = false;
-            player.play();
+            if (foreground) player.play();
         }
     }
 
@@ -668,7 +764,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
 
     @Override
     public void onSeekStart(FeedAdapter.VideoViewHolder holder) {
-        if (holder != activeHolder || player == null) {
+        if (holder != activeHolder || !hasLoadedPlayback()) {
             return;
         }
         holder.setSeeking(true);
@@ -678,7 +774,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
 
     @Override
     public void onSeekChanged(FeedAdapter.VideoViewHolder holder, int progress) {
-        if (holder == activeHolder && player != null) {
+        if (holder == activeHolder && hasLoadedPlayback()) {
             holder.showSeekPreview(progress, player.getDuration());
             holder.itemView.setTag(progress);
         }
@@ -686,13 +782,14 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
 
     @Override
     public void onSeekStop(FeedAdapter.VideoViewHolder holder, int progress) {
-        if (holder != activeHolder || player == null) {
+        if (holder != activeHolder || !hasLoadedPlayback()) {
             return;
         }
         long duration = player.getDuration();
         holder.setSeeking(false);
         if (duration > 0 && duration != C.TIME_UNSET) {
             player.seekTo(duration * progress / 1000L);
+            saveResumePosition(false);
         }
         if (wasPlayingBeforeSeek && foreground) {
             userPaused = false;
@@ -701,12 +798,13 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     }
 
     private void showSignedOut() {
+        saveResumePosition(false);
         cancel(libraryRequest);
         cancel(librariesRequest);
         cancel(playbackRequest);
         libraryGeneration = feedState.reset();
         loadingNextPage = false;
-        playbackGeneration++;
+        firstPagePending = false;
         repository = null;
         currentLibraryId = "";
         currentLibraryTitle = "";
@@ -716,10 +814,23 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         activePosition = RecyclerView.NO_POSITION;
         adapter.setVideos(Collections.emptyList());
         pager.setVisibility(View.GONE);
+        paginationAction.setVisibility(View.GONE);
         setBrowseButtonsEnabled(false);
         showMessage("连接你的私人片库", "登录 NAS 后，这里会显示服务端返回的真实媒体。\n\n"
                         + "客户端不会伪造视频，也不会扫描本地文件。",
                 false, "登录并连接", this::startLogin);
+    }
+
+    private boolean handleAuthenticationFailure(Throwable error) {
+        if (!RepositoryFailure.requiresLogin(error)) {
+            return false;
+        }
+        SessionStore.clear(this);
+        sessionToken = "";
+        showSignedOut();
+        showMessage("登录已失效", "请重新登录。旧会话不会继续用于重试请求。",
+                false, "重新登录", this::startLogin);
+        return true;
     }
 
     private void showMessage(String title, String detail, boolean loading,
@@ -756,6 +867,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
 
     private void startLogin() {
         Intent intent = new Intent(this, LoginActivity.class);
+        if (!serverBase.isEmpty()) intent.putExtra("base_url", serverBase);
         startActivityForResult(intent, REQUEST_LOGIN);
     }
 
@@ -765,21 +877,20 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         if (requestCode != REQUEST_LOGIN || resultCode != RESULT_OK || data == null) {
             return;
         }
-        String base = normalizeBase(data.getStringExtra("base_url"));
+        String base;
         String token = safe(data.getStringExtra("token"));
-        if (base.isEmpty() || token.isEmpty()) {
-            showMessage("登录信息不完整", "登录页没有返回服务器地址和会话令牌，请重新登录。",
-                    false, "重新登录", this::startLogin);
-            return;
-        }
         try {
+            base = ServerAddress.normalize(data.getStringExtra("base_url"));
+            if (token.isEmpty()) throw new IllegalArgumentException("缺少登录令牌");
             SessionStore.save(this, base, token);
-        } catch (IllegalStateException error) {
-            showMessage("登录信息保存失败", "Android 安全存储不可用，请检查系统锁屏设置后重试。\n原因："
+        } catch (IllegalArgumentException | IllegalStateException error) {
+            showMessage("登录信息保存失败", "请检查服务器地址与 Android 安全存储后重试。\n原因："
                             + errorReason(error),
                     false, "重新登录", this::startLogin);
             return;
         }
+        saveResumePosition(false);
+        if (!ServerAddress.sameOrigin(serverBase, base)) legacyResumeBase = base;
         serverBase = base;
         sessionToken = token;
         refreshRepository();
@@ -787,7 +898,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         currentLibraryId = "";
         currentLibraryTitle = "";
         setBrowseButtonsEnabled(true);
-        loadLibrary("", false);
+        loadLibrary("");
     }
 
     private void showSearchDialog() {
@@ -814,7 +925,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             hideKeyboard(query);
             currentLibraryId = "";
             currentLibraryTitle = "全部媒体";
-            loadLibrary(value, true);
+            loadLibrary(value);
         });
         query.requestFocus();
         dialog.getWindow().setSoftInputMode(
@@ -865,6 +976,11 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             } catch (Exception error) {
                 mainHandler.post(() -> {
                     if (!destroyed && dialog.isShowing() && repository == requestRepository) {
+                        if (RepositoryFailure.requiresLogin(error)) {
+                            dialog.dismiss();
+                            handleAuthenticationFailure(error);
+                            return;
+                        }
                         status.setText("媒体库读取失败：" + errorReason(error)
                                 + "。请检查连接后重试。");
                     }
@@ -903,7 +1019,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             currentLibraryId = id;
             currentLibraryTitle = selectedTitle;
             dialog.dismiss();
-            loadLibrary("", false);
+            loadLibrary("");
         });
         rows.addView(row, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
@@ -939,24 +1055,35 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         Dialog dialog = showDialog(card, false);
         cancel.setOnClickListener(v -> dialog.dismiss());
         save.setOnClickListener(v -> {
-            String base = normalizeBase(baseField.getText().toString());
-            if (base.isEmpty()) {
-                baseField.setError("请输入服务器地址");
+            String base;
+            String retainedToken;
+            try {
+                base = ServerAddress.normalize(baseField.getText().toString());
+                retainedToken = SessionStore.changeServer(this, base);
+            } catch (IllegalArgumentException | IllegalStateException error) {
+                baseField.setError(errorReason(error));
                 return;
             }
-            try {
-                SessionStore.save(this, base, sessionToken);
-            } catch (IllegalStateException error) {
-                baseField.setError("安全存储不可用：" + errorReason(error));
-                return;
+            saveResumePosition(false);
+            boolean changedOrigin = !ServerAddress.sameOrigin(serverBase, base);
+            if (changedOrigin) {
+                currentQuery = "";
+                currentLibraryId = "";
+                currentLibraryTitle = "";
+                legacyResumeBase = base;
             }
             serverBase = base;
+            sessionToken = retainedToken;
             refreshRepository();
             dialog.dismiss();
             if (hasSession()) {
-                loadLibrary(currentQuery, false);
+                loadLibrary(currentQuery);
             } else {
                 showSignedOut();
+                if (changedOrigin) {
+                    showMessage("服务器已更换", "原服务器令牌已清除，请登录当前服务器。",
+                            false, "登录当前服务器", this::startLogin);
+                }
             }
         });
         login.setOnClickListener(v -> {
@@ -966,9 +1093,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         logout.setOnClickListener(v -> {
             SessionStore.clear(this);
             dialog.dismiss();
-            serverBase = "";
             sessionToken = "";
-            repository = null;
             showSignedOut();
         });
     }
@@ -1052,14 +1177,11 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     }
 
     private String actionableLibraryError(Exception error) {
-        String reason = errorReason(error);
-        if (reason.contains("401") || reason.contains("403") || reason.contains("unauthor")) {
-            return "账号没有通过服务端鉴权。请重新登录并确认媒体库权限。\n原因：" + reason;
+        if (error instanceof RepositoryFailure
+                && ((RepositoryFailure) error).kind == RepositoryFailure.Kind.PERMISSION_DENIED) {
+            return "账号没有媒体库访问权限。请确认服务端授权。";
         }
-        if (reason.contains("rejected request") || reason.contains("failed with HTTP")) {
-            return "已连接 NAS，但服务端未能完成片库请求。请重试或切换媒体库。\n原因：" + reason;
-        }
-        return "片库请求未完成，请检查网络连接后重试。\n原因：" + reason;
+        return "片库请求未完成，请检查网络连接或服务端状态后重试。\n原因：" + errorReason(error);
     }
 
     private String actionablePlaybackError(Exception error) {
@@ -1086,7 +1208,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
 
     private String errorReason(Throwable error) {
         Throwable current = error;
-        while (current != null) {
+        for (int depth = 0; current != null && depth < 16; depth++) {
             String message = safe(current.getMessage());
             if (!message.isEmpty()) {
                 return message.length() > 180 ? message.substring(0, 180) : message;
@@ -1094,18 +1216,6 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             current = current.getCause();
         }
         return "服务端未提供详细错误";
-    }
-
-    private String videoTitle(MediaRepository.Video video) {
-        if (video == null) {
-            return "未命名视频";
-        }
-        String title = safe(video.title);
-        return title.isEmpty() ? safe(video.id) : title;
-    }
-
-    private String videoSubtitle(MediaRepository.Video video) {
-        return video == null ? "" : safe(video.subtitle);
     }
 
     private static void cancel(Future<?> request) {
@@ -1116,14 +1226,6 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
 
     private static String safe(String value) {
         return value == null ? "" : value.trim();
-    }
-
-    private static String normalizeBase(String value) {
-        String base = safe(value);
-        while (base.endsWith("/") && base.length() > 1) {
-            base = base.substring(0, base.length() - 1);
-        }
-        return base;
     }
 
     private TextView label(String value, float sizeSp, int color, int style) {
@@ -1191,8 +1293,9 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     @Override
     protected void onPause() {
         foreground = false;
+        mainHandler.removeCallbacks(progressTicker);
         saveResumePosition(false);
-        wasPlayingBeforePause = player != null && player.isPlaying();
+        wasPlayingBeforePause = hasLoadedPlayback() && player.getPlayWhenReady();
         if (player != null) {
             player.pause();
         }
@@ -1203,7 +1306,11 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     protected void onResume() {
         super.onResume();
         foreground = true;
-        if (!userPaused && activeHolder != null && player != null
+        mainHandler.removeCallbacks(progressTicker);
+        mainHandler.post(progressTicker);
+        if (!userPaused && activeHolder != null && hasLoadedPlayback()
+                && player.getPlaybackState() != Player.STATE_ENDED
+                && player.getPlayerError() == null
                 && (wasPlayingBeforePause || player.getPlaybackState() != Player.STATE_IDLE)) {
             player.play();
         }
@@ -1213,13 +1320,13 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     @Override
     protected void onDestroy() {
         destroyed = true;
+        saveResumePosition(false);
         libraryGeneration = feedState.reset();
-        playbackGeneration++;
+        playbackSession.invalidate();
         cancel(libraryRequest);
         cancel(librariesRequest);
         cancel(playbackRequest);
-        saveResumePosition(false);
-        mainHandler.removeCallbacks(progressTicker);
+        mainHandler.removeCallbacksAndMessages(null);
         if (networkExecutor != null) {
             networkExecutor.shutdownNow();
         }
