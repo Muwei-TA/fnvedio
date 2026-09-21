@@ -9,10 +9,13 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -29,7 +32,7 @@ import static org.junit.Assert.fail;
  */
 public final class ProductDeviceTest {
     private static final String TAG = "FnVideoProductDevice";
-    private static final int MAX_POSTER_PROBES = 8;
+    private static final int MAX_POSTER_PROBES = 1;
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 12_000;
 
@@ -73,7 +76,10 @@ public final class ProductDeviceTest {
             posterFields++;
             if (probes >= MAX_POSTER_PROBES) continue;
             probes++;
-            ProbeResult result = probePoster(base, token, poster);
+            ProbePair probe = probePoster(base, token, poster);
+            Log.i(TAG, "posterBefore=" + probe.before.summary()
+                    + " posterAfter=" + probe.after.summary());
+            ProbeResult result = probe.after;
             if (result.status > 0) {
                 httpResponses++;
                 statusCounts.put(result.status, statusCounts.getOrDefault(result.status, 0) + 1);
@@ -107,16 +113,17 @@ public final class ProductDeviceTest {
         assertTrue("No valid image poster response", imageResponses > 0);
     }
 
-    private ProbeResult probePoster(String base, String token, String poster) {
-        ProbeResult result = openPoster(poster, "");
-        // Poster endpoints in some deployments require the raw session header.
-        // Retry only on the configured NAS origin; never forward it elsewhere.
-        if ((result.status == 401 || result.status == 403)
+    private ProbePair probePoster(String base, String token, String poster) {
+        ProbeResult before = openPoster(poster, "");
+        ProbeResult after = before;
+        // Retry any non-image same-origin response with the raw session header.
+        // Redirects are disabled and the header is never sent cross-origin.
+        if (!before.imageResponse
                 && ServerAddress.sameOrigin(base, poster)
                 && token != null && !token.isEmpty()) {
-            result = openPoster(poster, token);
+            after = openPoster(poster, token);
         }
-        return result;
+        return new ProbePair(before, after);
     }
 
     private ProbeResult openPoster(String poster, String authorization) {
@@ -140,20 +147,51 @@ public final class ProductDeviceTest {
             String mime = normalizeMime(connection.getContentType());
             boolean imageMime = mime.startsWith("image/");
             boolean imageResponse = status >= 200 && status < 300 && imageMime;
+            Integer apiCode = null;
             if (status >= 200 && status < 300) {
-                try (InputStream input = connection.getInputStream()) {
-                    // Consume only a bounded prefix. The test needs the HTTP
-                    // response and MIME, not the image bytes.
-                    byte[] prefix = new byte[256];
-                    input.read(prefix);
+                InputStream input = connection.getInputStream();
+                try (InputStream body = input) {
+                    apiCode = imageMime ? null : numericCode(readBounded(body));
+                }
+            } else if (status >= 400) {
+                InputStream input = connection.getErrorStream();
+                if (input != null) {
+                    try (InputStream body = input) {
+                        apiCode = numericCode(readBounded(body));
+                    }
                 }
             }
-            return new ProbeResult(status, mime, imageResponse, imageMime, false);
+            return new ProbeResult(status, mime, apiCode, imageResponse, imageMime, false);
         } catch (Exception error) {
-            return new ProbeResult(-1, "", false, false, false);
+            return new ProbeResult(-1, "", null, false, false, false);
         } finally {
             if (connection != null) connection.disconnect();
         }
+    }
+
+    private static String readBounded(InputStream input) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[1024];
+        int remaining = 64 * 1024;
+        while (remaining > 0) {
+            int read = input.read(buffer, 0, Math.min(buffer.length, remaining));
+            if (read < 0) break;
+            output.write(buffer, 0, read);
+            remaining -= read;
+        }
+        return new String(output.toByteArray(), StandardCharsets.UTF_8);
+    }
+
+    private static Integer numericCode(String body) {
+        if (body == null || body.trim().isEmpty()) return null;
+        try {
+            Object raw = new JSONObject(body).opt("code");
+            if (raw instanceof Number) return ((Number) raw).intValue();
+            if (raw != null && raw != JSONObject.NULL) return Integer.valueOf(String.valueOf(raw));
+        } catch (Exception ignored) {
+            // Non-JSON bodies intentionally remain unreported.
+        }
+        return null;
     }
 
     /**
@@ -215,21 +253,38 @@ public final class ProductDeviceTest {
     private static final class ProbeResult {
         final int status;
         final String mimeType;
+        final Integer apiCode;
         final boolean imageResponse;
         final boolean imageMime;
         final boolean invalidUrl;
 
-        ProbeResult(int status, String mimeType, boolean imageResponse,
-                    boolean imageMime, boolean invalidUrl) {
+        ProbeResult(int status, String mimeType, Integer apiCode,
+                    boolean imageResponse, boolean imageMime, boolean invalidUrl) {
             this.status = status;
             this.mimeType = mimeType;
+            this.apiCode = apiCode;
             this.imageResponse = imageResponse;
             this.imageMime = imageMime;
             this.invalidUrl = invalidUrl;
         }
 
         static ProbeResult invalidUrl() {
-            return new ProbeResult(-1, "", false, false, true);
+            return new ProbeResult(-1, "", null, false, false, true);
+        }
+
+        String summary() {
+            return "status=" + status + " mime=" + mimeType
+                    + " code=" + (apiCode == null ? "none" : apiCode);
+        }
+    }
+
+    private static final class ProbePair {
+        final ProbeResult before;
+        final ProbeResult after;
+
+        ProbePair(ProbeResult before, ProbeResult after) {
+            this.before = before;
+            this.after = after;
         }
     }
 }
