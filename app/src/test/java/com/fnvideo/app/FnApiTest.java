@@ -12,6 +12,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import static org.junit.Assert.*;
@@ -191,6 +192,25 @@ public class FnApiTest {
         assertEquals("eac3", playRequest.getString("audio_encoder"));
         assertEquals("audio-normal", playRequest.getString("audio_guid"));
         assertEquals(6, playRequest.getInt("channels"));
+    }
+
+    @Test public void seriesEpisodesRequestsParentSortedBySeasonAndEpisode() throws Exception {
+        responses.put("/v/api/v1/item/list", "{\"code\":0,\"data\":{\"total\":3,\"list\":["
+                + "{\"guid\":\"ep-2\",\"type\":\"Episode\",\"title\":\"S1E2\",\"episode\":2,\"season\":1},"
+                + "{\"guid\":\"ep-10\",\"type\":\"Episode\",\"title\":\"S1E10\",\"episode\":10,\"season\":1},"
+                + "{\"guid\":\"ep-1\",\"type\":\"Episode\",\"title\":\"S2E1\",\"episode\":1,\"season\":2}]}}");
+        MediaRepository.Video series = new MediaRepository.Video();
+        series.id = "series-a"; series.type = "TV";
+        List<MediaRepository.Video> episodes = api.seriesEpisodes(series);
+        assertEquals(3, episodes.size());
+        assertEquals("ep-2", episodes.get(0).id);
+        assertEquals("ep-10", episodes.get(1).id);
+        assertEquals("ep-1", episodes.get(2).id);
+        JSONObject body = new JSONObject(bodies.get("/v/api/v1/item/list"));
+        assertEquals("series-a", body.getString("parent_guid"));
+        assertEquals("ASC", body.getString("sort_type"));
+        assertEquals("episode", body.getString("sort_column"));
+        assertEquals(1, body.getInt("page"));
     }
 
     @Test public void authFailureRemainsDistinguishableFromNetworkFailure() throws Exception {

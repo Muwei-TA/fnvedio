@@ -133,6 +133,33 @@ public final class FnApi implements MediaRepository {
         return resolve(video, true);
     }
 
+    @Override
+    public List<Video> seriesEpisodes(Video series) throws Exception {
+        if (series == null || safe(series.id).isEmpty()) {
+            throw new FnApiException("Cannot list episodes: series id is empty");
+        }
+        // The web season screen sends parent_guid for the container and sorts
+        // by episode index; the same /item/list route serves both screens.
+        JSONObject body = new JSONObject();
+        body.put("parent_guid", series.id);
+        body.put("sort_type", "ASC");
+        body.put("sort_column", "episode");
+        body.put("exclude_grouped_video", 1);
+        body.put("page", 1);
+        body.put("page_size", PAGE_SIZE);
+
+        Object data = requestData("POST", API_V1 + "/item/list", null, body);
+        JSONObject listing = asObject(data, "episode list");
+        JSONArray values = listing.optJSONArray("list");
+        List<Video> episodes = parseVideos(values == null ? new JSONArray() : values);
+        episodes.sort(SERIES_ORDER);
+        return episodes;
+    }
+
+    private static final java.util.Comparator<MediaRepository.Video> SERIES_ORDER =
+            java.util.Comparator.comparingInt((MediaRepository.Video video) -> video.season)
+                    .thenComparingInt(video -> video.episode);
+
     private Source resolve(Video video, boolean forceCompatible) throws Exception {
         if (video == null || safe(video.id).isEmpty()) {
             throw new FnApiException("Cannot resolve playback: item id is empty");
@@ -438,6 +465,8 @@ public final class FnApi implements MediaRepository {
             video.title = firstString(value, "title", "name", "sort_title");
             video.subtitle = firstString(value, "subtitle", "sub_title", "overview");
             video.poster = posterUrl(firstPoster(value));
+            video.season = firstInt(value, "season", "season_number");
+            video.episode = firstInt(value, "episode", "episode_number");
             result.add(video);
         }
         return result;
@@ -599,9 +628,14 @@ public final class FnApi implements MediaRepository {
         return 0L;
     }
 
-    private static int firstInt(JSONObject value, String key) {
-        long number = firstLong(value, key);
-        return number > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) number;
+    private static int firstInt(JSONObject value, String... keys) {
+        for (String key : keys) {
+            long number = firstLong(value, key);
+            if (number != 0L) {
+                return number > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) number;
+            }
+        }
+        return 0;
     }
 
     private static String canonicalQuery(Map<String, String> values) throws Exception {

@@ -12,6 +12,8 @@ public interface MediaRepository {
     Page page(Query query, String cursor) throws Exception;
     Source resolve(Video video) throws Exception;
     Source resolveCompatible(Video video) throws Exception;
+    /** Episodes of a series/season container, ordered by season and episode number. */
+    List<Video> seriesEpisodes(Video series) throws Exception;
 
     final class Video {
         public String id = "";
@@ -19,6 +21,10 @@ public interface MediaRepository {
         public String subtitle = "";
         public String poster = "";
         public String type = "";
+        /** Season number for episodes; zero when the server does not provide one. */
+        public int season = 0;
+        /** Episode number for episodes; zero when the server does not provide one. */
+        public int episode = 0;
     }
 
     final class Library {
