@@ -56,6 +56,16 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug
 
+      - name: Verify packaged APK version
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > "$RUNNER_TEMP/apk-badging.txt"
+          package_info=$(head -n 1 "$RUNNER_TEMP/apk-badging.txt")
+          echo "$package_info"
+          version_name=$(sed -n "s/.*versionName ['\"]\([^'\"]*\)['\"].*/\1/p" app/build.gradle | head -n 1)
+          version_code=$(sed -n "s/.*versionCode \([0-9][0-9]*\).*/\1/p" app/build.gradle | head -n 1)
+          [[ "$package_info" == *"versionCode='$version_code'"* ]]
+          [[ "$package_info" == *"versionName='$version_name'"* ]]
+
       - name: Upload test and lint reports
         if: always()
         uses: actions/upload-artifact@v4
