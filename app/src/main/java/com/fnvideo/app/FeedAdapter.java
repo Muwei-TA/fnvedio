@@ -4,7 +4,9 @@ import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -42,6 +44,16 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         void onSeekChanged(VideoViewHolder holder, int progress);
 
         void onSeekStop(VideoViewHolder holder, int progress);
+
+        void onHorizontalSeekStart(VideoViewHolder holder);
+
+        void onHorizontalSeek(VideoViewHolder holder, float deltaPx);
+
+        void onHorizontalSeekEnd(VideoViewHolder holder);
+
+        void onSpeedPressStart(VideoViewHolder holder);
+
+        void onSpeedPressEnd(VideoViewHolder holder);
     }
 
     private static final int BACKGROUND = Color.rgb(8, 10, 14);
@@ -242,8 +254,75 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         errorPanel.addView(retry, new LinearLayout.LayoutParams(
                 dp(pageContext, 112), dp(pageContext, 44)));
 
+        TextView speedIndicator = pillButton(pageContext, "2.0x");
+        speedIndicator.setTextSize(15);
+        speedIndicator.setVisibility(View.GONE);
+        speedIndicator.setContentDescription("倍速播放中");
+        FrameLayout.LayoutParams speedParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(pageContext, 40),
+                Gravity.CENTER_HORIZONTAL | Gravity.TOP);
+        speedParams.topMargin = dp(pageContext, 120);
+        page.addView(speedIndicator, speedParams);
+
         VideoViewHolder holder = new VideoViewHolder(page, playerView, title, subtitle, time,
-                seekBar, fit, loading, playIndicator, errorPanel, errorDetail, retry);
+                seekBar, fit, loading, playIndicator, errorPanel, errorDetail, retry,
+                speedIndicator);
+        GestureDetector pageGestures = new GestureDetector(pageContext,
+                new GestureDetector.SimpleOnGestureListener() {
+                    private static final float SWIPE_THRESHOLD_PX = 24f;
+
+                    @Override
+                    public boolean onDown(MotionEvent event) {
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onScroll(MotionEvent begin, MotionEvent current,
+                                            float distanceX, float distanceY) {
+                        float totalX = current.getX() - begin.getX();
+                        float totalY = current.getY() - begin.getY();
+                        if (Math.abs(totalX) > SWIPE_THRESHOLD_PX
+                                && Math.abs(totalX) > Math.abs(totalY)) {
+                            holder.markHorizontalSeekActive(true);
+                            listener.onHorizontalSeek(holder, totalX);
+                        } else if (!holder.isHorizontalSeekActive()) {
+                            // Vertical drags keep the pager's page swipes.
+                            holder.markHorizontalSeekActive(false);
+                        }
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onSingleTapConfirmed(MotionEvent event) {
+                        listener.onPageTapped(holder);
+                        return true;
+                    }
+
+                    @Override
+                    public void onLongPress(MotionEvent event) {
+                        if (holder.isHorizontalSeekActive()) {
+                            return;
+                        }
+                        holder.setSpeedPressed(true);
+                        listener.onSpeedPressStart(holder);
+                    }
+                });
+        View.OnTouchListener pageTouch = (view, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_UP
+                    || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                if (holder.isHorizontalSeekActive()) {
+                    holder.markHorizontalSeekActive(false);
+                    listener.onHorizontalSeekEnd(holder);
+                }
+                if (holder.isSpeedPressed()) {
+                    holder.setSpeedPressed(false);
+                    listener.onSpeedPressEnd(holder);
+                }
+            }
+            return pageGestures.onTouchEvent(event);
+        };
+        playerView.setOnTouchListener(pageTouch);
+        page.setOnTouchListener(pageTouch);
         playerView.setOnClickListener(v -> listener.onPageTapped(holder));
         page.setOnClickListener(v -> listener.onPageTapped(holder));
         fit.setOnClickListener(v -> listener.onFitToggle(holder));
@@ -327,14 +406,17 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         private final LinearLayout errorPanel;
         private final TextView errorDetail;
         private final TextView retryButton;
+        private final TextView speedIndicator;
         private MediaRepository.Video video;
         private boolean seeking;
+        private boolean horizontalSeekActive;
+        private boolean speedPressed;
 
         private VideoViewHolder(FrameLayout page, PlayerView playerView, TextView titleView,
                                 TextView subtitleView, TextView timeView, SeekBar seekBar,
                                 TextView fitButton, ProgressBar loading, TextView playIndicator,
                                 LinearLayout errorPanel, TextView errorDetail,
-                                TextView retryButton) {
+                                TextView retryButton, TextView speedIndicator) {
             super(page);
             this.playerView = playerView;
             this.titleView = titleView;
@@ -347,6 +429,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
             this.errorPanel = errorPanel;
             this.errorDetail = errorDetail;
             this.retryButton = retryButton;
+            this.speedIndicator = speedIndicator;
         }
 
         private void bind(MediaRepository.Video value) {
@@ -372,6 +455,34 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
 
         public void setSeeking(boolean value) {
             seeking = value;
+        }
+
+        public boolean isHorizontalSeekActive() {
+            return horizontalSeekActive;
+        }
+
+        public void markHorizontalSeekActive(boolean value) {
+            horizontalSeekActive = value;
+        }
+
+        public boolean isSpeedPressed() {
+            return speedPressed;
+        }
+
+        public void setSpeedPressed(boolean value) {
+            speedPressed = value;
+        }
+
+        public void showSpeedIndicator(float speed) {
+            speedIndicator.setText(java.text.DecimalFormatSymbols
+                    .getInstance(java.util.Locale.US).getDecimalSeparator() == '.'
+                    ? String.format(java.util.Locale.US, "%.1fx", speed)
+                    : String.valueOf(speed));
+            speedIndicator.setVisibility(View.VISIBLE);
+        }
+
+        public void hideSpeedIndicator() {
+            speedIndicator.setVisibility(View.GONE);
         }
 
         public void showLoading() {

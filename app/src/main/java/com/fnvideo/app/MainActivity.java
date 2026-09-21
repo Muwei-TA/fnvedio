@@ -797,6 +797,90 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         }
     }
 
+    private static final float HORIZONTAL_SEEK_MS_PER_PX = 500f;
+    private static final float SPEED_PLAYBACK_RATE = 2.0f;
+    private boolean horizontalSeekStarted;
+    private boolean wasPlayingBeforeSpeed;
+
+    @Override
+    public void onHorizontalSeekStart(FeedAdapter.VideoViewHolder holder) {
+        if (holder != activeHolder || !hasLoadedPlayback()) {
+            return;
+        }
+        horizontalSeekStarted = true;
+        holder.setSeeking(true);
+        wasPlayingBeforeSeek = player.getPlayWhenReady();
+        player.pause();
+    }
+
+    @Override
+    public void onHorizontalSeek(FeedAdapter.VideoViewHolder holder, float deltaPx) {
+        if (holder != activeHolder || !hasLoadedPlayback() || !horizontalSeekStarted) {
+            return;
+        }
+        long duration = player.getDuration();
+        if (duration <= 0 || duration == C.TIME_UNSET) {
+            return;
+        }
+        long deltaMs = (long) (deltaPx * HORIZONTAL_SEEK_MS_PER_PX);
+        long target = Math.min(duration - 250L, Math.max(0L,
+                player.getCurrentPosition() + deltaMs - (long) (lastHorizontalSeekPx * HORIZONTAL_SEEK_MS_PER_PX)));
+        lastHorizontalSeekPx = deltaPx;
+        player.seekTo(target);
+        holder.showSeekPreview((int) Math.min(1000L, target * 1000L / duration), duration);
+        holder.itemView.setTag((int) Math.min(1000L, target * 1000L / duration));
+    }
+
+    @Override
+    public void onHorizontalSeekEnd(FeedAdapter.VideoViewHolder holder) {
+        if (holder != activeHolder) {
+            horizontalSeekStarted = false;
+            lastHorizontalSeekPx = 0f;
+            return;
+        }
+        boolean started = horizontalSeekStarted;
+        horizontalSeekStarted = false;
+        lastHorizontalSeekPx = 0f;
+        if (!hasLoadedPlayback()) {
+            return;
+        }
+        holder.setSeeking(false);
+        if (started) {
+            saveResumePosition(false);
+        }
+        if (wasPlayingBeforeSeek && foreground) {
+            userPaused = false;
+            player.play();
+        }
+    }
+
+    @Override
+    public void onSpeedPressStart(FeedAdapter.VideoViewHolder holder) {
+        if (holder != activeHolder || !hasLoadedPlayback()
+                || player.getPlaybackState() != Player.STATE_READY) {
+            return;
+        }
+        wasPlayingBeforeSpeed = player.getPlayWhenReady();
+        player.setPlaybackSpeed(SPEED_PLAYBACK_RATE);
+        holder.showSpeedIndicator(SPEED_PLAYBACK_RATE);
+        if (!player.getPlayWhenReady() && foreground) {
+            player.play();
+        }
+    }
+
+    @Override
+    public void onSpeedPressEnd(FeedAdapter.VideoViewHolder holder) {
+        if (holder != activeHolder || !hasLoadedPlayback()) {
+            return;
+        }
+        player.setPlaybackSpeed(1.0f);
+        holder.hideSpeedIndicator();
+        if (!wasPlayingBeforeSpeed && foreground) {
+            player.pause();
+        }
+    }
+    private float lastHorizontalSeekPx;
+
     private void showSignedOut() {
         saveResumePosition(false);
         cancel(libraryRequest);
