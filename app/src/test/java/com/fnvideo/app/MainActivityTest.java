@@ -54,7 +54,7 @@ public final class MainActivityTest {
         PlaybackRequest.put(intent, first, Arrays.asList(first, second), 0, true, "series");
 
         try (org.robolectric.android.controller.ActivityController<MainActivity> controller =
-                     Robolectric.buildActivity(MainActivity.class).withIntent(intent).setup()) {
+                     Robolectric.buildActivity(MainActivity.class, intent).setup()) {
             MainActivity activity = controller.get();
             String origin = "http://nas.example.test:5666";
             WatchStateStore store = new WatchStateStore(activity, origin, "synthetic-user");
@@ -98,7 +98,7 @@ public final class MainActivityTest {
         PlaybackRequest.put(intent, video, Arrays.asList(video), 0, false, "series");
 
         try (org.robolectric.android.controller.ActivityController<MainActivity> controller =
-                     Robolectric.buildActivity(MainActivity.class).withIntent(intent).setup()) {
+                     Robolectric.buildActivity(MainActivity.class, intent).setup()) {
             MainActivity activity = controller.get();
             PlaybackSession session = getField(activity, "playbackSession");
             PlaybackSession.Ticket pending = session.select(
