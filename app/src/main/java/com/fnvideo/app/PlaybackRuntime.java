@@ -1,5 +1,7 @@
 package com.fnvideo.app;
 
+import android.content.Context;
+
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -12,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class PlaybackRuntime {
     private static final Map<String, String> WATCH_CURRENT = new ConcurrentHashMap<>();
+    private static final String PREFS = "watch_runtime";
 
     private PlaybackRuntime() { }
 
@@ -22,8 +25,27 @@ public final class PlaybackRuntime {
         else WATCH_CURRENT.put(key, videoId);
     }
 
+    public static void setWatchCurrent(Context context, String serverOrigin, String accountId,
+                                       String libraryId, String videoId) {
+        setWatchCurrent(serverOrigin, accountId, libraryId, videoId);
+        if (context == null) return;
+        String key = key(serverOrigin, accountId, libraryId);
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString(key, safe(videoId)).apply();
+    }
+
     public static String watchCurrent(String serverOrigin, String accountId, String libraryId) {
         return WATCH_CURRENT.getOrDefault(key(serverOrigin, accountId, libraryId), "");
+    }
+
+    public static String watchCurrent(Context context, String serverOrigin, String accountId,
+                                      String libraryId) {
+        String value = watchCurrent(serverOrigin, accountId, libraryId);
+        if (!value.isEmpty() || context == null) return value;
+        value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(key(serverOrigin, accountId, libraryId), "");
+        if (!value.isEmpty()) WATCH_CURRENT.put(key(serverOrigin, accountId, libraryId), value);
+        return value;
     }
 
     private static String key(String serverOrigin, String accountId, String libraryId) {

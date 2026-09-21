@@ -358,7 +358,7 @@ public final class LibraryActivity extends Activity {
             startButton.setOnClickListener(view -> {
                 watchState.setCurrentId(first.id);
                 watchCurrentId = first.id;
-                PlaybackRuntime.setWatchCurrent(serverBase, accountId, currentLibraryId, first.id);
+                PlaybackRuntime.setWatchCurrent(this, serverBase, accountId, currentLibraryId, first.id);
                 openPlayback(first, values, start, false, "watch");
             });
             page.addView(label("队列来自当前媒体库的真实作品；客户端不把搜索结果当作随看全量。",
@@ -380,7 +380,7 @@ public final class LibraryActivity extends Activity {
     }
 
     private void beginWatchSession() {
-        String previous = PlaybackRuntime.watchCurrent(serverBase, accountId, currentLibraryId);
+        String previous = PlaybackRuntime.watchCurrent(this, serverBase, accountId, currentLibraryId);
         if (!previous.isEmpty()) watchState.setCurrentId(previous);
         Set<String> resumeIds = new HashSet<>();
         for (WatchStateStore.Entry entry : recentEntries()) {
@@ -394,7 +394,7 @@ public final class LibraryActivity extends Activity {
     }
 
     private int watchIndex(List<MediaRepository.Video> values) {
-        String runtimeId = PlaybackRuntime.watchCurrent(serverBase, accountId, currentLibraryId);
+        String runtimeId = PlaybackRuntime.watchCurrent(this, serverBase, accountId, currentLibraryId);
         if (!runtimeId.isEmpty()) watchState.setCurrentId(runtimeId);
         String currentId = watchState.currentId();
         for (int i = 0; i < values.size(); i++) if (currentId.equals(values.get(i).id)) return i;
@@ -796,7 +796,8 @@ public final class LibraryActivity extends Activity {
         if (video == null || safe(video.id).isEmpty()) return;
         Intent intent = new Intent(this, MainActivity.class);
         PlaybackRequest.put(intent, video, values, Math.max(0, index), autoAdvance, mode,
-                currentLibraryId);
+                currentLibraryId, "watch".equalsIgnoreCase(mode) && watchState != null
+                        ? watchState.nextCursor() : "");
         startActivity(intent);
     }
 

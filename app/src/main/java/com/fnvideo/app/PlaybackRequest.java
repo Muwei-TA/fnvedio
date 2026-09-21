@@ -24,6 +24,7 @@ public final class PlaybackRequest {
     public static final String EXTRA_AUTO_ADVANCE = "fnvideo.playback.auto_advance";
     public static final String EXTRA_MODE = "fnvideo.playback.mode";
     public static final String EXTRA_LIBRARY_ID = "fnvideo.playback.library_id";
+    public static final String EXTRA_WATCH_CURSOR = "fnvideo.playback.watch_cursor";
 
     private PlaybackRequest() { }
 
@@ -36,6 +37,13 @@ public final class PlaybackRequest {
     public static void put(Intent intent, MediaRepository.Video video,
                            List<MediaRepository.Video> queue, int selectedIndex,
                            boolean autoAdvance, String mode, String libraryId) {
+        put(intent, video, queue, selectedIndex, autoAdvance, mode, libraryId, "");
+    }
+
+    public static void put(Intent intent, MediaRepository.Video video,
+                           List<MediaRepository.Video> queue, int selectedIndex,
+                           boolean autoAdvance, String mode, String libraryId,
+                           String watchCursor) {
         intent.putExtra(EXTRA_VIDEO, encode(video));
         List<MediaRepository.Video> safeQueue = queue == null
                 ? Collections.emptyList() : queue;
@@ -49,6 +57,7 @@ public final class PlaybackRequest {
         intent.putExtra(EXTRA_AUTO_ADVANCE, autoAdvance);
         intent.putExtra(EXTRA_MODE, mode == null ? "movie" : mode);
         intent.putExtra(EXTRA_LIBRARY_ID, libraryId == null ? "" : libraryId);
+        intent.putExtra(EXTRA_WATCH_CURSOR, watchCursor == null ? "" : watchCursor);
     }
 
     public static MediaRepository.Video video(Intent intent) {
@@ -74,6 +83,10 @@ public final class PlaybackRequest {
 
     public static String libraryId(Intent intent) {
         return intent == null ? "" : safe(intent.getStringExtra(EXTRA_LIBRARY_ID));
+    }
+
+    public static String watchCursor(Intent intent) {
+        return intent == null ? "" : safe(intent.getStringExtra(EXTRA_WATCH_CURSOR));
     }
 
     public static String encode(MediaRepository.Video video) {

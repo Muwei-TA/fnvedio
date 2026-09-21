@@ -66,6 +66,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private ExecutorService networkExecutor;
     private Future<?> playbackRequest;
     private Future<?> directoryRequest;
+    private Future<?> watchPageRequest;
     private ExoPlayer player;
     private PosterLoader posterLoader;
     private FeedAdapter adapter;
@@ -100,6 +101,10 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private boolean currentCompleted;
     private boolean fullDirectoryLoaded;
     private boolean directoryLoading;
+    private WatchQueueState watchQueueState;
+    private boolean watchPageLoading;
+    private int pendingWatchIndex = -1;
+    private String watchCursor = "";
     private long requestGeneration;
     private long lastSavedPosition = -1L;
     private Runnable advanceRunnable;
@@ -136,6 +141,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         mode = safe(PlaybackRequest.mode(getIntent()));
         if (mode.isEmpty()) mode = "movie";
         libraryId = safe(PlaybackRequest.libraryId(getIntent()));
+        watchCursor = safe(PlaybackRequest.watchCursor(getIntent()));
         queue.addAll(PlaybackRequest.queue(getIntent()));
         queueIndex = Math.max(0, PlaybackRequest.queueIndex(getIntent()));
         if (currentVideo != null && queue.isEmpty()) queue.add(currentVideo);
@@ -148,7 +154,16 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             currentVideo = queue.get(queueIndex);
         }
         if ("watch".equalsIgnoreCase(mode) && currentVideo != null) {
-            PlaybackRuntime.setWatchCurrent(serverBase, accountId, libraryId, currentVideo.id);
+            PlaybackRuntime.setWatchCurrent(this, serverBase, accountId, libraryId, currentVideo.id);
+            if (!accountId.isEmpty()) {
+                try {
+                    watchQueueState = new WatchQueueState(serverBase, accountId, libraryId);
+                    watchQueueState.acceptPage(new MediaRepository.Page(queue, watchCursor));
+                    watchQueueState.setCurrentId(currentVideo.id);
+                } catch (RuntimeException ignored) {
+                    watchQueueState = null;
+                }
+            }
         }
         buildUi();
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
@@ -534,11 +549,68 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         queueIndex = index;
         currentVideo = queue.get(index);
         if ("watch".equalsIgnoreCase(mode)) {
-            PlaybackRuntime.setWatchCurrent(serverBase, accountId, libraryId, currentVideo.id);
+            PlaybackRuntime.setWatchCurrent(this, serverBase, accountId, libraryId, currentVideo.id);
+            if (watchQueueState != null) watchQueueState.setCurrentId(currentVideo.id);
         }
         userPaused = false;
         lastSavedPosition = -1L;
         prepareCurrent(false, 0L);
+    }
+
+    /** Extends an explicit 随看 queue when a vertical swipe reaches its loaded edge. */
+    private void requestNextWatchPage() {
+        if (watchQueueState == null || watchPageLoading || watchQueueState.isConfirmedEnd()
+                || repository == null || !hasSession()) {
+            if (watchQueueState != null && watchQueueState.isConfirmedEnd()) {
+                Toast.makeText(this, "随看已到当前媒体库末端。", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+        final MediaRepository requestRepository = repository;
+        final String cursor = watchQueueState.nextCursor();
+        watchPageLoading = true;
+        advanceBanner.setText("正在加载下一页随看作品…");
+        advanceBanner.setVisibility(View.VISIBLE);
+        watchPageRequest = networkExecutor.submit(() -> {
+            try {
+                MediaRepository.Page page = requestRepository.page(
+                        new MediaRepository.Query("", libraryId), cursor);
+                mainHandler.post(() -> {
+                    if (destroyed || repository != requestRepository || watchQueueState == null) return;
+                    watchPageLoading = false;
+                    try {
+                        watchQueueState.acceptPage(page);
+                        queue.clear();
+                        queue.addAll(watchQueueState.items());
+                        int current = indexById(queue, currentVideo == null ? "" : currentVideo.id);
+                        queueIndex = Math.max(0, current);
+                        advanceBanner.setVisibility(View.GONE);
+                        if (pendingWatchIndex >= 0 && pendingWatchIndex < queue.size()) {
+                            int target = pendingWatchIndex;
+                            pendingWatchIndex = -1;
+                            selectQueueIndex(target);
+                        } else if (pendingWatchIndex >= queue.size()
+                                && !watchQueueState.isConfirmedEnd()) {
+                            requestNextWatchPage();
+                        } else {
+                            pendingWatchIndex = -1;
+                        }
+                    } catch (IllegalArgumentException | IllegalStateException error) {
+                        pendingWatchIndex = -1;
+                        advanceBanner.setText("随看分页不完整，请返回随看重试。");
+                        Toast.makeText(this, "随看分页不完整：" + error.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> {
+                    if (destroyed || repository != requestRepository) return;
+                    watchPageLoading = false;
+                    pendingWatchIndex = -1;
+                    advanceBanner.setText("下一页随看加载失败，请重试。");
+                    Toast.makeText(this, "随看读取失败：" + errorReason(error), Toast.LENGTH_LONG).show();
+                });
+            }
+        });
     }
 
     /** Fill the bounded Binder handoff with the server's complete episode directory. */
@@ -769,7 +841,12 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     public void onVerticalSwipe(FeedAdapter.VideoViewHolder holder, float deltaY) {
         if (!"watch".equalsIgnoreCase(mode) || holder != activeHolder || advancing) return;
         int next = deltaY < 0 ? queueIndex + 1 : queueIndex - 1;
-        if (next >= 0 && next < queue.size()) selectQueueIndex(next);
+        if (next >= 0 && next < queue.size()) {
+            selectQueueIndex(next);
+        } else if (deltaY < 0 && next >= queue.size()) {
+            pendingWatchIndex = next;
+            requestNextWatchPage();
+        }
     }
 
     @Override
@@ -1001,6 +1078,13 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         return false;
     }
 
+    private static int indexById(List<MediaRepository.Video> values, String id) {
+        for (int i = 0; i < values.size(); i++) {
+            if (safe(id).equals(safe(values.get(i).id))) return i;
+        }
+        return -1;
+    }
+
     private static boolean isDecodingError(PlaybackException error) {
         return error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
                 || error.errorCode == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED
@@ -1138,6 +1222,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         mainHandler.removeCallbacksAndMessages(null);
         cancel(playbackRequest);
         cancel(directoryRequest);
+        cancel(watchPageRequest);
         if (networkExecutor != null) networkExecutor.shutdownNow();
         if (posterLoader != null) posterLoader.shutdown();
         playbackSession.invalidate();
