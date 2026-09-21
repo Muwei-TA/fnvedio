@@ -85,6 +85,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private String serverBase = "";
     private String sessionToken = "";
     private String accountId = "";
+    private String libraryId = "";
     private String mode = "movie";
     private final ArrayList<MediaRepository.Video> queue = new ArrayList<>();
     private int queueIndex;
@@ -107,6 +108,11 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private boolean wasPlayingBeforeSeek;
     private boolean wasPlayingBeforeSpeed;
     private boolean zoomMode;
+    private MediaRepository.Source pendingSource;
+    private PlaybackSession.Ticket pendingSourceTicket;
+    private MediaRepository.Video pendingSourceVideo;
+    private long pendingSourcePosition;
+    private String pendingPlaybackError = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -129,6 +135,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         currentVideo = PlaybackRequest.video(getIntent());
         mode = safe(PlaybackRequest.mode(getIntent()));
         if (mode.isEmpty()) mode = "movie";
+        libraryId = safe(PlaybackRequest.libraryId(getIntent()));
         queue.addAll(PlaybackRequest.queue(getIntent()));
         queueIndex = Math.max(0, PlaybackRequest.queueIndex(getIntent()));
         if (currentVideo != null && queue.isEmpty()) queue.add(currentVideo);
@@ -139,6 +146,9 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         if (!queue.isEmpty()) {
             queueIndex = Math.min(queueIndex, queue.size() - 1);
             currentVideo = queue.get(queueIndex);
+        }
+        if ("watch".equalsIgnoreCase(mode) && currentVideo != null) {
+            PlaybackRuntime.setWatchCurrent(serverBase, accountId, libraryId, currentVideo.id);
         }
         buildUi();
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
@@ -345,6 +355,10 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         cancel(playbackRequest);
         dismissAdvance();
         stopPlayer();
+        pendingSource = null;
+        pendingSourceTicket = null;
+        pendingSourceVideo = null;
+        pendingPlaybackError = "";
         activeHolder = null;
         playbackSession.invalidate();
         PlaybackSession.Ticket ticket = playbackSession.select(serverBase, currentVideo.id, generation);
@@ -362,7 +376,14 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
                         : requestRepository.resolve(requestVideo);
                 mainHandler.post(() -> {
                     if (isCurrent(ticket, requestVideo, requestRepository) && foreground) {
-                        attachPlayback(ticket, requestVideo, source, position);
+                        if (activeHolder == null) {
+                            pendingSource = source;
+                            pendingSourceTicket = ticket;
+                            pendingSourceVideo = requestVideo;
+                            pendingSourcePosition = position;
+                        } else {
+                            attachPlayback(ticket, requestVideo, source, position);
+                        }
                     }
                 });
             } catch (Exception error) {
@@ -372,8 +393,13 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
                         showMessage("登录已失效", "请返回片库重新连接 NAS。", false,
                                 "返回片库", this::returnToLibrary);
                     } else {
-                        hideMessage();
-                        if (activeHolder != null) activeHolder.showError(actionablePlaybackError(error));
+                        String message = actionablePlaybackError(error);
+                        if (activeHolder == null) {
+                            pendingPlaybackError = message;
+                        } else {
+                            hideMessage();
+                            activeHolder.showError(message);
+                        }
                     }
                 });
             }
@@ -394,7 +420,23 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         activeHolder = holder;
         holder.setFitMode(zoomMode);
         holder.setControlsVisible(true);
-        holder.showLoading();
+        if (!pendingPlaybackError.isEmpty()) {
+            hideMessage();
+            holder.showError(pendingPlaybackError);
+            pendingPlaybackError = "";
+        } else if (pendingSource != null && pendingSourceTicket != null
+                && pendingSourceVideo == video
+                && playbackSession.isCurrent(pendingSourceTicket)) {
+            MediaRepository.Source source = pendingSource;
+            PlaybackSession.Ticket sourceTicket = pendingSourceTicket;
+            long sourcePosition = pendingSourcePosition;
+            pendingSource = null;
+            pendingSourceTicket = null;
+            pendingSourceVideo = null;
+            attachPlayback(sourceTicket, video, source, sourcePosition);
+        } else {
+            holder.showLoading();
+        }
     }
 
     private void attachPlayback(PlaybackSession.Ticket ticket, MediaRepository.Video video,
@@ -491,6 +533,9 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         saveWatchState(false);
         queueIndex = index;
         currentVideo = queue.get(index);
+        if ("watch".equalsIgnoreCase(mode)) {
+            PlaybackRuntime.setWatchCurrent(serverBase, accountId, libraryId, currentVideo.id);
+        }
         userPaused = false;
         lastSavedPosition = -1L;
         prepareCurrent(false, 0L);

@@ -62,7 +62,6 @@ public final class LibraryActivity extends Activity {
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private final ArrayList<MediaRepository.Video> catalogItems = new ArrayList<>();
     private final ArrayList<MediaRepository.Video> detailEpisodes = new ArrayList<>();
-    private final ArrayList<MediaRepository.Video> watchQueue = new ArrayList<>();
 
     private PosterLoader posterLoader;
     private MediaRepository repository;
@@ -83,20 +82,22 @@ public final class LibraryActivity extends Activity {
     private String currentLibraryTitle = "全部媒体";
     private String currentKind = "";
     private String currentQuery = "";
+    private String searchReturnKind = "";
+    private String searchReturnQuery = "";
     private String selectedSeasonKey = "";
     private MediaRepository.Video detailVideo;
     private int detailReturnSection;
     private boolean detailReturnSearchMode;
+    private int detailReturnScrollY;
     private boolean searchMode;
     private boolean focusSearchOnRender;
     private boolean showLater;
     private boolean metadataFromDetail;
     private String watchCurrentId = "";
-    private String watchNextCursor = "";
+    private WatchQueueState watchState;
     private boolean watchLoading;
-    private boolean watchExhausted;
-    private boolean watchInitialized;
-    private int watchSeedOffset = -1;
+    private boolean watchSessionStarted;
+    private boolean watchPaginationError;
     private int section;
 
     private FrameLayout root;
@@ -256,10 +257,14 @@ public final class LibraryActivity extends Activity {
             startLogin();
             return;
         }
+        if (!searchMode || (searchReturnKind.isEmpty() && !currentKind.isEmpty())) {
+            searchReturnKind = currentKind;
+            searchReturnQuery = currentQuery;
+            currentKind = "";
+        }
         searchMode = true;
         boolean focusSearch = focusSearchOnRender;
         focusSearchOnRender = false;
-        currentKind = "";
         ScrollView scroll = pageScroll();
         LinearLayout page = column();
         scroll.addView(page);
@@ -286,6 +291,8 @@ public final class LibraryActivity extends Activity {
                 12, SECONDARY, Typeface.NORMAL), wrapParams(0, 24));
         setPage(scroll);
         back.setOnClickListener(view -> {
+            currentKind = searchReturnKind;
+            currentQuery = searchReturnQuery;
             searchMode = false;
             showLibraryPage();
         });
@@ -325,92 +332,103 @@ public final class LibraryActivity extends Activity {
         page.addView(label("随看", 25, PRIMARY, Typeface.BOLD), wrapParams(18, 3));
         page.addView(label("主动开始一段不打断当前片库上下文的观看。上下滑切换作品。",
                 12, SECONDARY, Typeface.NORMAL), wrapParams(0, 18));
-        if (!watchInitialized) {
-            watchInitialized = true;
-            requestWatchPage();
+        if (accountId.isEmpty()) {
+            page.addView(emptyBlock("随看需要账号身份", "旧会话未绑定账号，请重新登录后启用隔离的随看队列。"),
+                    wrapParams(0, 16));
+            TextView login = actionButton("重新登录并绑定账号", ACCENT);
+            page.addView(login, wrapParams(0, 16));
+            login.setOnClickListener(view -> startLogin());
+            setPage(scroll);
+            return;
         }
-        syncWatchCurrentFromRecent();
-        if (watchQueue.isEmpty() && watchLoading) {
+        if (watchState == null) watchState = new WatchQueueState(serverBase, accountId, currentLibraryId);
+        if (!watchState.hasAcceptedPage() && !watchLoading && !watchPaginationError) requestWatchPage();
+        List<MediaRepository.Video> values = watchState.items();
+        if (values.isEmpty() && watchLoading) {
             page.addView(skeletonBlock("正在准备随看队列…"), wrapParams(0, 18));
-        } else if (watchQueue.isEmpty()) {
+        } else if (values.isEmpty()) {
             page.addView(emptyBlock("还没有可随看的影片", "先在片库中加载作品，剧集请从详情选择分集。"), wrapParams(0, 18));
         } else {
-            int start = watchIndex();
-            MediaRepository.Video first = watchQueue.get(start);
-            LinearLayout hero = watchHero(first);
-            page.addView(hero, wrapParams(0, 20));
+            if (!watchSessionStarted) beginWatchSession();
+            int start = watchIndex(values);
+            MediaRepository.Video first = values.get(start);
+            page.addView(watchHero(first), wrapParams(0, 20));
             TextView startButton = actionButton("开始随看", ACCENT);
             page.addView(startButton, wrapParams(0, 22));
             startButton.setOnClickListener(view -> {
+                watchState.setCurrentId(first.id);
                 watchCurrentId = first.id;
-                openPlayback(first, watchQueue, start, false, "watch");
+                PlaybackRuntime.setWatchCurrent(serverBase, accountId, currentLibraryId, first.id);
+                openPlayback(first, values, start, false, "watch");
             });
             page.addView(label("队列来自当前媒体库的真实作品；客户端不把搜索结果当作随看全量。",
                     12, SECONDARY, Typeface.NORMAL), wrapParams(0, 14));
-            page.addView(posterGrid(watchQueue), wrapParams(0, 20));
-            if (!watchNextCursor.isEmpty()) {
+            page.addView(posterGrid(values), wrapParams(0, 20));
+            if (!watchState.isConfirmedEnd()) {
                 TextView more = actionButton("加载更多随看作品", ACCENT);
                 page.addView(more, wrapParams(0, 12));
                 more.setOnClickListener(view -> requestWatchPage());
-            } else if (watchExhausted) {
+            } else {
                 page.addView(label("已读到当前媒体库末端。", 12, SECONDARY, Typeface.NORMAL), wrapParams(0, 14));
             }
+        }
+        if (watchPaginationError) {
+            page.addView(label("随看分页未能确认完整范围，请重进随看后重试。",
+                    12, SECONDARY, Typeface.NORMAL), wrapParams(0, 8));
         }
         setPage(scroll);
     }
 
-    private int watchIndex() {
-        if (!watchCurrentId.isEmpty()) {
-            for (int i = 0; i < watchQueue.size(); i++) {
-                if (watchCurrentId.equals(watchQueue.get(i).id)) return i;
+    private void beginWatchSession() {
+        String previous = PlaybackRuntime.watchCurrent(serverBase, accountId, currentLibraryId);
+        if (!previous.isEmpty()) watchState.setCurrentId(previous);
+        Set<String> resumeIds = new HashSet<>();
+        for (WatchStateStore.Entry entry : recentEntries()) {
+            if (entry != null && entry.video != null && !entry.completed && entry.positionMs > 0) {
+                resumeIds.add(entry.video.id);
             }
         }
-        if (watchSeedOffset < 0 && !watchQueue.isEmpty()) {
-            watchSeedOffset = Math.floorMod((serverBase + accountId).hashCode(), watchQueue.size());
-            Set<String> recentIds = new HashSet<>();
-            for (WatchStateStore.Entry entry : recentEntries()) {
-                if (entry != null && entry.video != null) recentIds.add(entry.video.id);
-            }
-            for (int offset = 0; offset < watchQueue.size(); offset++) {
-                int candidate = (watchSeedOffset + offset) % watchQueue.size();
-                if (!recentIds.contains(watchQueue.get(candidate).id)) return candidate;
-            }
-        }
-        return watchQueue.isEmpty() ? 0 : Math.floorMod(watchSeedOffset, watchQueue.size());
+        WatchQueueState.NextResult result = watchState.beginSession(resumeIds);
+        watchSessionStarted = true;
+        if (result.needsPage() && !watchState.isConfirmedEnd()) requestWatchPage();
     }
 
-    private void syncWatchCurrentFromRecent() {
-        if (watchStore == null || watchQueue.isEmpty()) return;
-        Set<String> ids = new HashSet<>();
-        for (MediaRepository.Video item : watchQueue) ids.add(item.id);
-        for (WatchStateStore.Entry entry : watchStore.recent()) {
-            if (entry != null && entry.video != null && ids.contains(entry.video.id)) {
-                watchCurrentId = entry.video.id;
-                return;
-            }
-        }
+    private int watchIndex(List<MediaRepository.Video> values) {
+        String runtimeId = PlaybackRuntime.watchCurrent(serverBase, accountId, currentLibraryId);
+        if (!runtimeId.isEmpty()) watchState.setCurrentId(runtimeId);
+        String currentId = watchState.currentId();
+        for (int i = 0; i < values.size(); i++) if (currentId.equals(values.get(i).id)) return i;
+        return 0;
     }
 
     private void requestWatchPage() {
-        if (!hasSession() || repository == null || watchLoading || watchExhausted) return;
+        if (!hasSession() || repository == null || watchState == null || watchLoading
+                || watchPaginationError || watchState.isConfirmedEnd()) return;
         final long generation = watchGeneration;
-        final String cursor = watchNextCursor;
+        final String cursor = watchState.nextCursor();
         final String library = currentLibraryId;
         final MediaRepository requestRepository = repository;
         watchLoading = true;
         watchRequest = networkExecutor.submit(() -> {
             try {
-                MediaRepository.Page page = requestRepository.catalogPage(
-                        new MediaRepository.Query("", library, ""), cursor);
+                MediaRepository.Page page = requestRepository.page(
+                        new MediaRepository.Query("", library), cursor);
                 mainHandler.post(() -> {
                     if (generation != watchGeneration || destroyed() || repository != requestRepository) return;
                     watchLoading = false;
-                    appendWatchPage(page);
+                    try {
+                        watchState.acceptPage(page);
+                    } catch (IllegalArgumentException | IllegalStateException invalidPage) {
+                        watchPaginationError = true;
+                        Toast.makeText(this, "随看分页不完整：" + invalidPage.getMessage(), Toast.LENGTH_LONG).show();
+                        return;
+                    }
                     if (section == 1) showWatchPage();
-                    if (watchQueue.isEmpty() && !watchExhausted) requestWatchPage();
+                    if (watchState.items().isEmpty() && !watchState.isConfirmedEnd()) requestWatchPage();
                 });
             } catch (Exception error) {
                 mainHandler.post(() -> {
+                    if (generation != watchGeneration || destroyed() || repository != requestRepository) return;
                     watchLoading = false;
                     if (RepositoryFailure.requiresLogin(error)) {
                         handleAuthenticationFailure();
@@ -425,30 +443,14 @@ public final class LibraryActivity extends Activity {
         });
     }
 
-    private void appendWatchPage(MediaRepository.Page page) {
-        if (page == null) return;
-        Set<String> ids = new HashSet<>();
-        for (MediaRepository.Video item : watchQueue) if (item != null) ids.add(item.id);
-        for (MediaRepository.Video item : page.items) {
-            if (item != null && !safe(item.id).isEmpty()
-                    && ("Movie".equalsIgnoreCase(item.type) || "Video".equalsIgnoreCase(item.type))
-                    && ids.add(item.id)) watchQueue.add(item);
-        }
-        String next = safe(page.nextCursor);
-        watchExhausted = next.isEmpty() || next.equals(watchNextCursor);
-        watchNextCursor = next;
-    }
-
     private void resetWatchQueue() {
         cancel(watchRequest);
         watchGeneration++;
-        watchQueue.clear();
-        watchNextCursor = "";
+        watchState = null;
         watchCurrentId = "";
-        watchSeedOffset = -1;
         watchLoading = false;
-        watchExhausted = false;
-        watchInitialized = false;
+        watchSessionStarted = false;
+        watchPaginationError = false;
     }
 
     private void showMyPage() {
@@ -573,6 +575,7 @@ public final class LibraryActivity extends Activity {
 
     private void showDetails(MediaRepository.Video item) {
         if (item == null) return;
+        detailReturnScrollY = currentScrollY();
         detailReturnSection = section;
         detailReturnSearchMode = searchMode;
         detailVideo = item;
@@ -667,17 +670,14 @@ public final class LibraryActivity extends Activity {
         }
         ImageView hero = posterImage(detailVideo.poster, -1, dp(245));
         hero.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        page.addView(hero, wrapParams(0, 14));
+        LinearLayout.LayoutParams heroParams = new LinearLayout.LayoutParams(-1, dp(245));
+        heroParams.bottomMargin = dp(14);
+        page.addView(hero, heroParams);
         loadPoster(hero, detailVideo.poster, 700, 980);
         page.addView(label(safe(detailVideo.title).isEmpty() ? "未命名作品" : detailVideo.title,
                 27, PRIMARY, Typeface.BOLD), wrapParams(0, 6));
         String meta = metadataLine(detailVideo);
         page.addView(label(meta, 13, SECONDARY, Typeface.NORMAL), wrapParams(0, 12));
-        if (!safe(detailVideo.overview).isEmpty()) {
-            page.addView(label(detailVideo.overview, 14, PRIMARY, Typeface.NORMAL), wrapParams(0, 16));
-        } else {
-            page.addView(label("简介未知", 14, SECONDARY, Typeface.NORMAL), wrapParams(0, 16));
-        }
         LinearLayout actions = row();
         TextView play = actionButton(detailPlayLabel(), ACCENT);
         TextView later = actionButton(watchStore != null && watchStore.isWatchLater(detailVideo.id)
@@ -687,6 +687,21 @@ public final class LibraryActivity extends Activity {
         laterParams.leftMargin = dp(8);
         actions.addView(later, laterParams);
         page.addView(actions, wrapParams(0, 18));
+        TextView overview = label(safe(detailVideo.overview).isEmpty() ? "简介未知" : detailVideo.overview,
+                14, safe(detailVideo.overview).isEmpty() ? SECONDARY : PRIMARY, Typeface.NORMAL);
+        overview.setMaxLines(4);
+        overview.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        page.addView(overview, wrapParams(0, safe(detailVideo.overview).length() > 180 ? 5 : 16));
+        if (safe(detailVideo.overview).length() > 180) {
+            TextView expand = actionButton("展开简介", SECONDARY);
+            expand.setOnClickListener(view -> {
+                boolean expanded = overview.getMaxLines() > 4;
+                overview.setMaxLines(expanded ? 4 : Integer.MAX_VALUE);
+                overview.setEllipsize(expanded ? android.text.TextUtils.TruncateAt.END : null);
+                expand.setText(expanded ? "展开简介" : "收起简介");
+            });
+            page.addView(expand, new LinearLayout.LayoutParams(-1, dp(38)));
+        }
         if (loading) {
             page.addView(skeletonBlock("正在读取影片资料与分集…"), wrapParams(0, 18));
         } else if (isSeries(detailVideo)) {
@@ -780,7 +795,8 @@ public final class LibraryActivity extends Activity {
                                int index, boolean autoAdvance, String mode) {
         if (video == null || safe(video.id).isEmpty()) return;
         Intent intent = new Intent(this, MainActivity.class);
-        PlaybackRequest.put(intent, video, values, Math.max(0, index), autoAdvance, mode);
+        PlaybackRequest.put(intent, video, values, Math.max(0, index), autoAdvance, mode,
+                currentLibraryId);
         startActivity(intent);
     }
 
@@ -816,7 +832,8 @@ public final class LibraryActivity extends Activity {
                 });
             } catch (Exception error) {
                 mainHandler.post(() -> {
-                    if (generation != catalogGeneration || destroyed()) return;
+                    if (generation != catalogGeneration || destroyed()
+                            || repository != requestRepository) return;
                     nextCursor = "";
                     if (section == 0) {
                         if (searchMode) showSearchPage(); else showLibraryPage();
@@ -1154,6 +1171,7 @@ public final class LibraryActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(9), dp(8), dp(10), dp(8));
+        row.setMinimumHeight(dp(88));
         row.setBackground(roundBackground(SURFACE, 14));
         ImageView image = posterImage(episode.poster, dp(92), dp(62));
         row.addView(image, new LinearLayout.LayoutParams(dp(92), dp(62)));
@@ -1162,12 +1180,18 @@ public final class LibraryActivity extends Activity {
         text.setPadding(dp(10), 0, 0, 0);
         String title = "第 " + (episode.episode > 0 ? episode.episode : "?") + " 集 · "
                 + (safe(episode.title).isEmpty() ? "未命名分集" : episode.title);
-        text.addView(label(title, 14, PRIMARY, Typeface.BOLD), wrapParams(0, 4));
+        TextView titleView = label(title, 14, PRIMARY, Typeface.BOLD);
+        titleView.setMaxLines(2);
+        titleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        text.addView(titleView, wrapParams(0, 4));
         WatchStateStore.Entry state = entryFor(episode);
         String sub = state != null && state.completed ? "已看完"
                 : state != null && state.positionMs > 0 ? "正在观看 · " + formatTime(state.positionMs)
-                : safe(episode.subtitle).isEmpty() ? "可播放" : episode.subtitle;
-        text.addView(label(sub, 11, SECONDARY, Typeface.NORMAL), wrapParams(0, 0));
+                : "可播放";
+        TextView subtitleView = label(sub, 11, SECONDARY, Typeface.NORMAL);
+        subtitleView.setMaxLines(2);
+        subtitleView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        text.addView(subtitleView, wrapParams(0, 0));
         row.addView(text, new LinearLayout.LayoutParams(0, -2, 1f));
         TextView arrow = label(state != null && state.completed ? "✓" : "▷", 18,
                 state != null && state.completed ? SECONDARY : ACCENT, Typeface.BOLD);
@@ -1642,6 +1666,8 @@ public final class LibraryActivity extends Activity {
             return;
         }
         if (searchMode) {
+            currentKind = searchReturnKind;
+            currentQuery = searchReturnQuery;
             searchMode = false;
             showLibraryPage();
             return;
@@ -1658,6 +1684,7 @@ public final class LibraryActivity extends Activity {
         else if (detailReturnSection == 2) showMyPage();
         else if (searchMode) showSearchPage();
         else showLibraryPage();
+        restoreScroll(detailReturnScrollY);
     }
 
     private void clearDetailContext() {

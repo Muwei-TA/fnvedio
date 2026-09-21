@@ -23,12 +23,19 @@ public final class PlaybackRequest {
     public static final String EXTRA_QUEUE_INDEX = "fnvideo.playback.queue_index";
     public static final String EXTRA_AUTO_ADVANCE = "fnvideo.playback.auto_advance";
     public static final String EXTRA_MODE = "fnvideo.playback.mode";
+    public static final String EXTRA_LIBRARY_ID = "fnvideo.playback.library_id";
 
     private PlaybackRequest() { }
 
     public static void put(Intent intent, MediaRepository.Video video,
                            List<MediaRepository.Video> queue, int selectedIndex,
                            boolean autoAdvance, String mode) {
+        put(intent, video, queue, selectedIndex, autoAdvance, mode, "");
+    }
+
+    public static void put(Intent intent, MediaRepository.Video video,
+                           List<MediaRepository.Video> queue, int selectedIndex,
+                           boolean autoAdvance, String mode, String libraryId) {
         intent.putExtra(EXTRA_VIDEO, encode(video));
         List<MediaRepository.Video> safeQueue = queue == null
                 ? Collections.emptyList() : queue;
@@ -41,6 +48,7 @@ public final class PlaybackRequest {
         intent.putExtra(EXTRA_QUEUE_INDEX, Math.max(0, safeIndex - start));
         intent.putExtra(EXTRA_AUTO_ADVANCE, autoAdvance);
         intent.putExtra(EXTRA_MODE, mode == null ? "movie" : mode);
+        intent.putExtra(EXTRA_LIBRARY_ID, libraryId == null ? "" : libraryId);
     }
 
     public static MediaRepository.Video video(Intent intent) {
@@ -62,6 +70,10 @@ public final class PlaybackRequest {
 
     public static String mode(Intent intent) {
         return intent == null ? "movie" : safe(intent.getStringExtra(EXTRA_MODE));
+    }
+
+    public static String libraryId(Intent intent) {
+        return intent == null ? "" : safe(intent.getStringExtra(EXTRA_LIBRARY_ID));
     }
 
     public static String encode(MediaRepository.Video video) {
