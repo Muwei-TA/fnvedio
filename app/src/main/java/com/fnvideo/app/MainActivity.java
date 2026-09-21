@@ -302,12 +302,17 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             public void onIsPlayingChanged(boolean isPlaying) {
                 FeedAdapter.VideoViewHolder holder = activeHolder;
                 if (holder != null && hasLoadedPlayback()) {
-                    holder.setPlaying(isPlaying);
+                    holder.setPlaying(player.getPlayWhenReady()
+                            && player.getPlaybackState() != Player.STATE_ENDED);
                 }
             }
 
             @Override
             public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+                if (activeHolder != null && hasLoadedPlayback()) {
+                    activeHolder.setPlaying(playWhenReady
+                            && player.getPlaybackState() != Player.STATE_ENDED);
+                }
                 if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY) {
                     userPaused = true;
                 }
@@ -788,7 +793,6 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             return;
         }
         long duration = player.getDuration();
-        holder.setSeeking(false);
         if (duration > 0 && duration != C.TIME_UNSET) {
             player.seekTo(duration * progress / 1000L);
             saveResumePosition(false);
@@ -797,6 +801,9 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             userPaused = false;
             player.play();
         }
+        holder.setPlaying(player.getPlayWhenReady()
+                && player.getPlaybackState() != Player.STATE_ENDED);
+        holder.setSeeking(false);
     }
 
     private static final float HORIZONTAL_SEEK_MS_PER_PX = 500f;
@@ -846,7 +853,6 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         if (!hasLoadedPlayback()) {
             return;
         }
-        holder.setSeeking(false);
         if (started) {
             saveResumePosition(false);
         }
@@ -854,6 +860,9 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             userPaused = false;
             player.play();
         }
+        holder.setPlaying(player.getPlayWhenReady()
+                && player.getPlaybackState() != Player.STATE_ENDED);
+        holder.setSeeking(false);
     }
 
     @Override

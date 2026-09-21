@@ -457,6 +457,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         private final TextView episodesButton;
         private MediaRepository.Video video;
         private boolean seeking;
+        private boolean showPlayIndicator;
         private boolean horizontalSeekActive;
         private boolean speedPressed;
         private int posterBindGeneration;
@@ -527,6 +528,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
 
         public void setSeeking(boolean value) {
             seeking = value;
+            updatePlayIndicator();
         }
 
         public boolean isHorizontalSeekActive() {
@@ -558,6 +560,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         }
 
         public void showLoading() {
+            showPlayIndicator = false;
             holderReady = false;
             loading.setVisibility(View.VISIBLE);
             errorPanel.setVisibility(View.GONE);
@@ -578,6 +581,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         }
 
         public void showError(String detail) {
+            showPlayIndicator = false;
             holderReady = false;
             loading.setVisibility(View.GONE);
             playIndicator.setVisibility(View.GONE);
@@ -587,7 +591,13 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         }
 
         public void setPlaying(boolean playing) {
-            playIndicator.setVisibility(playing ? View.GONE : View.VISIBLE);
+            showPlayIndicator = !playing;
+            updatePlayIndicator();
+        }
+
+        private void updatePlayIndicator() {
+            playIndicator.setVisibility(showPlayIndicator && !seeking
+                    ? View.VISIBLE : View.GONE);
         }
 
         public void setFitMode(boolean zoom) {
@@ -618,6 +628,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         }
 
         private void resetStatus() {
+            showPlayIndicator = false;
             holderReady = false;
             loading.setVisibility(View.GONE);
             errorPanel.setVisibility(View.GONE);

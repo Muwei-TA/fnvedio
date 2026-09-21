@@ -92,4 +92,41 @@ public class FeedGestureTest {
         assertEquals(Arrays.asList("onHorizontalSeekStart", "onHorizontalSeek",
                 "onHorizontalSeekEnd"), calls);
     }
+
+    private android.view.View playIndicator(android.view.View view) {
+        if ("播放".contentEquals(view.getContentDescription() == null
+                ? "" : view.getContentDescription())) return view;
+        if (view instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                android.view.View found = playIndicator(group.getChildAt(i));
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    @Test public void temporarySeekPauseDoesNotShowPlayOverlay() {
+        android.view.View overlay = playIndicator(holder.itemView);
+        assertNotNull(overlay);
+        holder.setPlaying(true);
+        holder.setSeeking(true);
+        holder.setPlaying(false); // Player pause callback during drag.
+        assertEquals(android.view.View.GONE, overlay.getVisibility());
+        holder.setPlaying(true); // Resume intent before clearing seek state.
+        holder.setSeeking(false);
+        assertEquals(android.view.View.GONE, overlay.getVisibility());
+    }
+
+    @Test public void pausedVideoHidesOverlayDuringSeekAndRestoresItAfterwards() {
+        android.view.View overlay = playIndicator(holder.itemView);
+        assertNotNull(overlay);
+        holder.setPlaying(false);
+        assertEquals(android.view.View.VISIBLE, overlay.getVisibility());
+        holder.setSeeking(true);
+        assertEquals(android.view.View.GONE, overlay.getVisibility());
+        holder.setPlaying(false);
+        holder.setSeeking(false);
+        assertEquals(android.view.View.VISIBLE, overlay.getVisibility());
+    }
 }
