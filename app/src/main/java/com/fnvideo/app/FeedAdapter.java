@@ -311,7 +311,10 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
                         float totalY = current.getY() - begin.getY();
                         if (Math.abs(totalX) > SWIPE_THRESHOLD_PX
                                 && Math.abs(totalX) > Math.abs(totalY)) {
-                            holder.markHorizontalSeekActive(true);
+                            if (!holder.isHorizontalSeekActive()) {
+                                holder.markHorizontalSeekActive(true);
+                                listener.onHorizontalSeekStart(holder);
+                            }
                             listener.onHorizontalSeek(holder, totalX);
                         } else if (!holder.isHorizontalSeekActive()) {
                             // Vertical drags keep the pager's page swipes.
