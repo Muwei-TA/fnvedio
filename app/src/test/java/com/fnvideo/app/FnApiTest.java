@@ -9,6 +9,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import java.net.InetSocketAddress;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HashMap;
@@ -89,6 +90,15 @@ public class FnApiTest {
         assertEquals(1, body.get("exclude_grouped_video"));
         assertEquals("3", page.nextCursor);
         assertEquals("film", page.items.get(0).id);
+    }
+
+    @Test public void posterPathUsesObservedV1ImageRoute() throws Exception {
+        responses.put("/v/api/v1/item/list", "{\"code\":0,\"data\":{\"total\":1,\"list\":["
+                + "{\"guid\":\"film\",\"type\":\"Movie\",\"poster\":\"posters/film.jpg\"}]}}");
+        MediaRepository.Page page = api.page(new MediaRepository.Query("", ""), "");
+        URL poster = new URL(page.items.get(0).poster);
+        assertEquals("/v/api/v1/sys/img/posters/film.jpg", poster.getPath());
+        assertEquals("w=400", poster.getQuery());
     }
 
     @Test public void directStorageSourceDoesNotReceiveNasHeaders() throws Exception {
@@ -200,12 +210,15 @@ public class FnApiTest {
 
         MediaRepository.Video video = new MediaRepository.Video();
         video.id = "normal";
-        api.resolve(video);
+        MediaRepository.Source source = api.resolve(video);
 
         JSONObject playRequest = new JSONObject(bodies.get("/v/api/v1/play/play"));
         assertEquals("eac3", playRequest.getString("audio_encoder"));
         assertEquals("audio-normal", playRequest.getString("audio_guid"));
         assertEquals(6, playRequest.getInt("channels"));
+        assertEquals("/v/api/v1/media/range/media-normal", new URL(source.url).getPath());
+        assertEquals("playlink=https%3A%2F%2Fstorage.example%2Foriginal-normal.mp4",
+                new URL(source.url).getQuery());
     }
 
     @Test public void seriesEpisodesRequestsParentSortedBySeasonAndEpisode() throws Exception {

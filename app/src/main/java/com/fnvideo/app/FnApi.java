@@ -738,7 +738,7 @@ public final class FnApi implements MediaRepository {
     }
 
     private String rangeUrl(String mediaGuid, String playLink) throws Exception {
-        return apiUrl("/media/range/" + encodePath(mediaGuid))
+        return apiUrl(API_V1 + "/media/range/" + encodePath(mediaGuid))
                 + "?playlink=" + encode(playLink);
     }
 
@@ -876,7 +876,7 @@ public final class FnApi implements MediaRepository {
         if (poster.isEmpty() || poster.startsWith("http://") || poster.startsWith("https://")) {
             return poster;
         }
-        String imageBase = apiUrl("/sys/img");
+        String imageBase = apiUrl(API_V1 + "/sys/img");
         if (poster.startsWith(imageBase + "/")) {
             return poster;
         }
