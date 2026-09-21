@@ -178,8 +178,13 @@ public final class LoginActivity extends Activity {
                 if (!active || ticket != generation) return;
                 setBusy(false);
                 if (resultToken != null) {
+                    // The username is the local namespace identity. It is safe
+                    // to persist; the password remains transient and the token
+                    // is still returned only for SessionStore's encrypted save.
+                    SessionStore.rememberAccountId(this, user);
                     setResult(RESULT_OK, new Intent().putExtra("base_url", origin)
-                            .putExtra("token", resultToken));
+                            .putExtra("token", resultToken)
+                            .putExtra("account_id", user));
                     finish();
                 } else {
                     message.setText(resultError == null ? "连接失败，请重试。" : resultError);
