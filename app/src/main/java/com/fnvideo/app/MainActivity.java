@@ -112,7 +112,10 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         configureWindow();
-        networkExecutor = Executors.newSingleThreadExecutor();
+        // Playback resolution and the optional full-series directory may run
+        // together; both are still guarded by the playback ticket on the UI
+        // thread, so a slow catalogue walk cannot delay explicit playback.
+        networkExecutor = Executors.newFixedThreadPool(2);
         restoreSession();
         repository = hasSession() ? new FnApi(serverBase, sessionToken) : null;
         if (hasSession()) {

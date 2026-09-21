@@ -70,8 +70,10 @@ public final class LibraryActivity extends Activity {
     private Future<?> catalogRequest;
     private Future<?> detailRequest;
     private Future<?> libraryRequest;
+    private Future<?> watchRequest;
     private long catalogGeneration;
     private long detailGeneration;
+    private long watchGeneration;
     private String nextCursor = "";
     private String serverBase = "";
     private String sessionToken = "";
@@ -86,9 +88,15 @@ public final class LibraryActivity extends Activity {
     private int detailReturnSection;
     private boolean detailReturnSearchMode;
     private boolean searchMode;
+    private boolean focusSearchOnRender;
     private boolean showLater;
     private boolean metadataFromDetail;
-    private int watchCursor;
+    private String watchCurrentId = "";
+    private String watchNextCursor = "";
+    private boolean watchLoading;
+    private boolean watchExhausted;
+    private boolean watchInitialized;
+    private int watchSeedOffset = -1;
     private int section;
 
     private FrameLayout root;
@@ -205,6 +213,8 @@ public final class LibraryActivity extends Activity {
         filterHint.setGravity(Gravity.CENTER);
         filterHint.setPadding(dp(12), 0, dp(12), 0);
         filterHint.setBackground(roundBackground(Color.TRANSPARENT, 18));
+        filterHint.setClickable(true);
+        filterHint.setOnClickListener(view -> showFilterDialog());
         filters.addView(filterHint, new LinearLayout.LayoutParams(dp(56), dp(42)));
         page.addView(filters, wrapParams(0, 18));
 
@@ -234,7 +244,10 @@ public final class LibraryActivity extends Activity {
             page.addView(hint, wrapParams(0, 24));
         }
         setPage(scroll);
-        search.setOnClickListener(view -> showSearchPage());
+        search.setOnClickListener(view -> {
+            focusSearchOnRender = true;
+            showSearchPage();
+        });
         libraries.setOnClickListener(view -> showLibrariesDialog());
     }
 
@@ -244,6 +257,8 @@ public final class LibraryActivity extends Activity {
             return;
         }
         searchMode = true;
+        boolean focusSearch = focusSearchOnRender;
+        focusSearchOnRender = false;
         currentKind = "";
         ScrollView scroll = pageScroll();
         LinearLayout page = column();
@@ -288,8 +303,10 @@ public final class LibraryActivity extends Activity {
             }
             @Override public void afterTextChanged(Editable s) { }
         });
-        field.requestFocus();
-        showKeyboard(field);
+        if (focusSearch) {
+            field.requestFocus();
+            showKeyboard(field);
+        }
     }
 
     private final Runnable searchDebounceRunnable = () -> {
@@ -308,29 +325,130 @@ public final class LibraryActivity extends Activity {
         page.addView(label("随看", 25, PRIMARY, Typeface.BOLD), wrapParams(18, 3));
         page.addView(label("主动开始一段不打断当前片库上下文的观看。上下滑切换作品。",
                 12, SECONDARY, Typeface.NORMAL), wrapParams(0, 18));
-        watchQueue.clear();
-        for (MediaRepository.Video item : catalogItems) {
-            if (item != null && ("Movie".equalsIgnoreCase(item.type)
-                    || "Video".equalsIgnoreCase(item.type))) watchQueue.add(item);
+        if (!watchInitialized) {
+            watchInitialized = true;
+            requestWatchPage();
         }
-        if (watchQueue.isEmpty()) {
+        syncWatchCurrentFromRecent();
+        if (watchQueue.isEmpty() && watchLoading) {
+            page.addView(skeletonBlock("正在准备随看队列…"), wrapParams(0, 18));
+        } else if (watchQueue.isEmpty()) {
             page.addView(emptyBlock("还没有可随看的影片", "先在片库中加载作品，剧集请从详情选择分集。"), wrapParams(0, 18));
         } else {
-            int start = Math.floorMod(watchCursor, watchQueue.size());
+            int start = watchIndex();
             MediaRepository.Video first = watchQueue.get(start);
             LinearLayout hero = watchHero(first);
             page.addView(hero, wrapParams(0, 20));
             TextView startButton = actionButton("开始随看", ACCENT);
             page.addView(startButton, wrapParams(0, 22));
             startButton.setOnClickListener(view -> {
-                watchCursor = (start + 1) % Math.max(1, watchQueue.size());
+                watchCurrentId = first.id;
                 openPlayback(first, watchQueue, start, false, "watch");
             });
-            page.addView(label("本次队列来自已加载的真实作品；没有个性化推荐或自动跨季逻辑。",
+            page.addView(label("队列来自当前媒体库的真实作品；客户端不把搜索结果当作随看全量。",
                     12, SECONDARY, Typeface.NORMAL), wrapParams(0, 14));
             page.addView(posterGrid(watchQueue), wrapParams(0, 20));
+            if (!watchNextCursor.isEmpty()) {
+                TextView more = actionButton("加载更多随看作品", ACCENT);
+                page.addView(more, wrapParams(0, 12));
+                more.setOnClickListener(view -> requestWatchPage());
+            } else if (watchExhausted) {
+                page.addView(label("已读到当前媒体库末端。", 12, SECONDARY, Typeface.NORMAL), wrapParams(0, 14));
+            }
         }
         setPage(scroll);
+    }
+
+    private int watchIndex() {
+        if (!watchCurrentId.isEmpty()) {
+            for (int i = 0; i < watchQueue.size(); i++) {
+                if (watchCurrentId.equals(watchQueue.get(i).id)) return i;
+            }
+        }
+        if (watchSeedOffset < 0 && !watchQueue.isEmpty()) {
+            watchSeedOffset = Math.floorMod((serverBase + accountId).hashCode(), watchQueue.size());
+            Set<String> recentIds = new HashSet<>();
+            for (WatchStateStore.Entry entry : recentEntries()) {
+                if (entry != null && entry.video != null) recentIds.add(entry.video.id);
+            }
+            for (int offset = 0; offset < watchQueue.size(); offset++) {
+                int candidate = (watchSeedOffset + offset) % watchQueue.size();
+                if (!recentIds.contains(watchQueue.get(candidate).id)) return candidate;
+            }
+        }
+        return watchQueue.isEmpty() ? 0 : Math.floorMod(watchSeedOffset, watchQueue.size());
+    }
+
+    private void syncWatchCurrentFromRecent() {
+        if (watchStore == null || watchQueue.isEmpty()) return;
+        Set<String> ids = new HashSet<>();
+        for (MediaRepository.Video item : watchQueue) ids.add(item.id);
+        for (WatchStateStore.Entry entry : watchStore.recent()) {
+            if (entry != null && entry.video != null && ids.contains(entry.video.id)) {
+                watchCurrentId = entry.video.id;
+                return;
+            }
+        }
+    }
+
+    private void requestWatchPage() {
+        if (!hasSession() || repository == null || watchLoading || watchExhausted) return;
+        final long generation = watchGeneration;
+        final String cursor = watchNextCursor;
+        final String library = currentLibraryId;
+        final MediaRepository requestRepository = repository;
+        watchLoading = true;
+        watchRequest = networkExecutor.submit(() -> {
+            try {
+                MediaRepository.Page page = requestRepository.catalogPage(
+                        new MediaRepository.Query("", library, ""), cursor);
+                mainHandler.post(() -> {
+                    if (generation != watchGeneration || destroyed() || repository != requestRepository) return;
+                    watchLoading = false;
+                    appendWatchPage(page);
+                    if (section == 1) showWatchPage();
+                    if (watchQueue.isEmpty() && !watchExhausted) requestWatchPage();
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> {
+                    watchLoading = false;
+                    if (RepositoryFailure.requiresLogin(error)) {
+                        handleAuthenticationFailure();
+                        return;
+                    }
+                    if (section == 1) {
+                        showWatchPage();
+                        Toast.makeText(this, "随看队列读取失败：" + errorReason(error), Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        });
+    }
+
+    private void appendWatchPage(MediaRepository.Page page) {
+        if (page == null) return;
+        Set<String> ids = new HashSet<>();
+        for (MediaRepository.Video item : watchQueue) if (item != null) ids.add(item.id);
+        for (MediaRepository.Video item : page.items) {
+            if (item != null && !safe(item.id).isEmpty()
+                    && ("Movie".equalsIgnoreCase(item.type) || "Video".equalsIgnoreCase(item.type))
+                    && ids.add(item.id)) watchQueue.add(item);
+        }
+        String next = safe(page.nextCursor);
+        watchExhausted = next.isEmpty() || next.equals(watchNextCursor);
+        watchNextCursor = next;
+    }
+
+    private void resetWatchQueue() {
+        cancel(watchRequest);
+        watchGeneration++;
+        watchQueue.clear();
+        watchNextCursor = "";
+        watchCurrentId = "";
+        watchSeedOffset = -1;
+        watchLoading = false;
+        watchExhausted = false;
+        watchInitialized = false;
     }
 
     private void showMyPage() {
@@ -639,6 +757,11 @@ public final class LibraryActivity extends Activity {
             MediaRepository.Video target = findResumeEpisode(detailVideo);
             if (target == null) {
                 List<MediaRepository.Video> season = episodesForSeason(selectedSeasonKey);
+                if (!season.isEmpty() && season.get(0).episode > 1) {
+                    Toast.makeText(this, "第 1 集尚未入库，请从分集列表手动选择。",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
                 target = season.isEmpty() ? null : season.get(0);
             }
             if (target == null) {
@@ -750,10 +873,48 @@ public final class LibraryActivity extends Activity {
         });
     }
 
+    private void showFilterDialog() {
+        LinearLayout card = dialogCard();
+        card.addView(label("筛选片库", 19, PRIMARY, Typeface.BOLD), wrapParams(0, 12));
+        card.addView(label("修改草稿后点击应用；取消不会改变当前列表。", 12, SECONDARY, Typeface.NORMAL),
+                wrapParams(0, 12));
+        final String[] draft = {currentKind};
+        TextView all = dialogRow("全部作品", "电影、剧集与可播放视频");
+        TextView movies = dialogRow("电影", "仅展示电影作品");
+        TextView series = dialogRow("剧集", "仅展示剧集容器");
+        card.addView(all, wrapParams(0, 7));
+        card.addView(movies, wrapParams(0, 7));
+        card.addView(series, wrapParams(0, 12));
+        LinearLayout buttons = row();
+        TextView cancel = actionButton("取消", SECONDARY);
+        TextView apply = actionButton("应用筛选", ACCENT);
+        buttons.addView(cancel, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        LinearLayout.LayoutParams applyParams = new LinearLayout.LayoutParams(0, dp(48), 1f);
+        applyParams.leftMargin = dp(8);
+        buttons.addView(apply, applyParams);
+        card.addView(buttons);
+        Dialog dialog = showDialog(card);
+        View.OnClickListener choose = view -> {
+            if (view == all) draft[0] = "";
+            else if (view == movies) draft[0] = "Movie";
+            else draft[0] = "TV";
+        };
+        all.setOnClickListener(choose);
+        movies.setOnClickListener(choose);
+        series.setOnClickListener(choose);
+        cancel.setOnClickListener(view -> dialog.dismiss());
+        apply.setOnClickListener(view -> {
+            currentKind = draft[0];
+            dialog.dismiss();
+            reloadCatalog();
+        });
+    }
+
     private void addLibraryChoice(Dialog dialog, LinearLayout rows, String title, String id) {
         TextView choice = dialogRow(title, id.equals(currentLibraryId) ? "当前媒体库" : "切换到这里");
         rows.addView(choice, wrapParams(0, 8));
         choice.setOnClickListener(view -> {
+            if (!safe(id).equals(currentLibraryId)) resetWatchQueue();
             currentLibraryId = safe(id);
             currentLibraryTitle = safe(title).isEmpty() ? "全部媒体" : title;
             dialog.dismiss();
@@ -816,6 +977,7 @@ public final class LibraryActivity extends Activity {
             legacyIdentity = account.isEmpty();
             repository = new FnApi(serverBase, sessionToken);
             initStore();
+            resetWatchQueue();
             currentQuery = "";
             currentKind = "";
             searchMode = false;
@@ -834,6 +996,7 @@ public final class LibraryActivity extends Activity {
         legacyIdentity = false;
         repository = null;
         watchStore = null;
+        resetWatchQueue();
         showSignedOut();
     }
 
@@ -1346,6 +1509,13 @@ public final class LibraryActivity extends Activity {
             MediaRepository.Video video = entry.video;
             String seriesId = safe(video.seriesId);
             if (safe(series.id).equals(seriesId) || safe(series.id).equals(safe(video.parentId))) return video;
+        }
+        // Some NAS revisions only return a season parent on the episode
+        // snapshot. Match the already-read episode identities before giving
+        // up, without guessing from an array index.
+        for (MediaRepository.Video episode : detailEpisodes) {
+            WatchStateStore.Entry entry = entryFor(episode);
+            if (entry != null && !entry.completed && entry.positionMs > 0) return episode;
         }
         return null;
     }
