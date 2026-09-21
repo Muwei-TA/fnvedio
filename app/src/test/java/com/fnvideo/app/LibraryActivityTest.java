@@ -17,6 +17,7 @@ import org.robolectric.Shadows;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.LooperMode;
+import org.robolectric.shadows.ShadowDialog;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -117,6 +118,30 @@ public final class LibraryActivityTest {
         }
     }
 
+    @Test public void missingFirstEpisodeDoesNotAutoAdvanceToLaterEpisode() throws Exception {
+        FakeRepository repository = new FakeRepository();
+        MediaRepository.Video series = video("series-7", "缺第一集的剧集", "TV");
+        repository.details = series;
+        repository.episodes = Collections.singletonList(
+                episode("episode-s1e2", "第二集", 1, 2, "season-1"));
+        try (ActivityController<LibraryActivity> controller =
+                     Robolectric.buildActivity(LibraryActivity.class).setup()) {
+            LibraryActivity activity = controller.get();
+            attachSession(activity, repository);
+            invoke(activity, "showDetails", series);
+            waitFor(() -> repository.episodeCalls.get() > 0, 1_000L);
+            waitFor(() -> find(activity.getWindow().getDecorView(), "▷ 开始播放") != null,
+                    1_000L);
+            View play = find(activity.getWindow().getDecorView(), "▷ 开始播放");
+            assertNotNull(play);
+            play.performClick();
+            idleMain();
+
+            assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
+            assertEquals(0, repository.resolveCalls.get());
+        }
+    }
+
     @Test public void lateSearchResponseCannotReplaceNewQuery() throws Exception {
         FakeRepository repository = new FakeRepository();
         repository.oldQueryRelease = new CountDownLatch(1);
@@ -164,8 +189,10 @@ public final class LibraryActivityTest {
             catalog.add(movie);
             setField(activity, "currentKind", "Movie");
             setField(activity, "currentQuery", "draft query");
-            setField(activity, "searchMode", true);
-            invoke(activity, "showSearchPage");
+            invoke(activity, "showLibraryPage");
+            View search = find(activity.getWindow().getDecorView(), "搜索片库");
+            assertNotNull(search);
+            search.performClick();
 
             View back = find(activity.getWindow().getDecorView(), "返回片库");
             assertNotNull(back);
@@ -195,6 +222,15 @@ public final class LibraryActivityTest {
             View filter = find(activity.getWindow().getDecorView(), "筛选");
             assertNotNull(filter);
             filter.performClick();
+            android.app.Dialog dialog = ShadowDialog.getLatestDialog();
+            assertNotNull(dialog);
+            View dialogRoot = dialog.getWindow().getDecorView();
+            View series = findTextContaining(dialogRoot, "剧集");
+            assertNotNull(series);
+            series.performClick();
+            View cancel = find(dialogRoot, "取消");
+            assertNotNull(cancel);
+            cancel.performClick();
             idleMain();
 
             List<MediaRepository.Video> after = getField(activity, "catalogItems");
@@ -264,6 +300,19 @@ public final class LibraryActivityTest {
             ViewGroup group = (ViewGroup) view;
             for (int i = 0; i < group.getChildCount(); i++) {
                 View found = findDescriptionContaining(group.getChildAt(i), fragment);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private static View findTextContaining(View view, String fragment) {
+        if (view instanceof TextView && ((TextView) view).getText() != null
+                && ((TextView) view).getText().toString().contains(fragment)) return view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findTextContaining(group.getChildAt(i), fragment);
                 if (found != null) return found;
             }
         }
