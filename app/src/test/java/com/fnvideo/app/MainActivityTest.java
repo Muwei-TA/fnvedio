@@ -39,7 +39,15 @@ public final class MainActivityTest {
                 .edit().clear().commit();
     }
 
-    @Test public void manuallySelectingAnotherQueueItemDoesNotCompleteThePreviousItem() throws Exception {
+    @Test public void manuallySelectingAnotherQueueItemPreservesIncompleteState() throws Exception {
+        assertManualQueueJumpPreservesCompletion(false);
+    }
+
+    @Test public void manuallySelectingAnotherQueueItemPreservesCompletedState() throws Exception {
+        assertManualQueueJumpPreservesCompletion(true);
+    }
+
+    private void assertManualQueueJumpPreservesCompletion(boolean initialCompleted) throws Exception {
         MediaRepository.Video first = episode("episode-1", "第一集", 1);
         MediaRepository.Video second = episode("episode-2", "第二集", 2);
         Intent intent = new Intent(context, MainActivity.class);
@@ -55,9 +63,13 @@ public final class MainActivityTest {
             setField(activity, "accountId", "synthetic-user");
             setField(activity, "watchStore", store);
             setField(activity, "foreground", true);
-            setField(activity, "currentCompleted", true);
+            setField(activity, "currentCompleted", initialCompleted);
 
-            ExoPlayer player = new ExoPlayer.Builder(activity).build();
+            ExoPlayer player = getField(activity, "player");
+            if (player == null) {
+                player = new ExoPlayer.Builder(activity).build();
+                setField(activity, "player", player);
+            }
             player.setMediaItem(new MediaItem.Builder()
                     .setMediaId(first.id)
                     .setUri("http://nas.example.test/media/" + first.id)
@@ -75,7 +87,8 @@ public final class MainActivityTest {
                 if (entry.video != null && first.id.equals(entry.video.id)) previous = entry;
             }
             assertNotNull("The previous item should retain a watch checkpoint", previous);
-            assertFalse("Manual queue navigation must not write completed=true", previous.completed);
+            assertEquals("Manual queue navigation must preserve the previous completion state",
+                    initialCompleted, previous.completed);
         }
     }
 
