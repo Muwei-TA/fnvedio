@@ -25,6 +25,8 @@ public interface MediaRepository {
         public int season = 0;
         /** Episode number for episodes; zero when the server does not provide one. */
         public int episode = 0;
+        /** Parent series/season container id for episodes; empty for standalone items. */
+        public String parentId = "";
     }
 
     final class Library {

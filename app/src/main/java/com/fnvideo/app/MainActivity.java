@@ -879,6 +879,145 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             player.pause();
         }
     }
+
+    @Override
+    public void onEpisodesBrowse(FeedAdapter.VideoViewHolder holder) {
+        if (holder != activeHolder || !hasSession()) {
+            return;
+        }
+        MediaRepository.Video current = holder.getVideo();
+        String parentId = current == null ? "" : safe(current.parentId);
+        if (parentId.isEmpty()) {
+            Toast.makeText(this, "此视频没有所属剧集信息", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        showEpisodesDialog(parentId, current);
+    }
+
+    private void showEpisodesDialog(String parentId, MediaRepository.Video current) {
+        LinearLayout card = dialogCard();
+        addDialogTitle(card, "剧集目录");
+        TextView status = label("正在从 NAS 读取分集列表…", 13, SECONDARY, Typeface.NORMAL);
+        card.addView(status, wrapParams(0, dp(10)));
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(rows, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        card.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(320)));
+        TextView close = dialogButton("关闭", SECONDARY);
+        card.addView(close, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        Dialog dialog = showDialog(card, false);
+        close.setOnClickListener(v -> dialog.dismiss());
+
+        final MediaRepository requestRepository = repository;
+        if (requestRepository == null) {
+            status.setText("当前没有可用连接，请重新登录。");
+            return;
+        }
+        final long generation = libraryGeneration;
+        cancel(librariesRequest);
+        librariesRequest = networkExecutor.submit(() -> {
+            try {
+                List<MediaRepository.Video> episodes = requestRepository.seriesEpisodes(
+                        episodeParent(parentId, current));
+                mainHandler.post(() -> {
+                    if (destroyed || !dialog.isShowing()
+                            || repository != requestRepository || generation != libraryGeneration) {
+                        return;
+                    }
+                    renderEpisodeRows(dialog, rows, episodes, current);
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> {
+                    if (!destroyed && dialog.isShowing()
+                            && repository == requestRepository && generation == libraryGeneration) {
+                        if (RepositoryFailure.requiresLogin(error)) {
+                            dialog.dismiss();
+                            handleAuthenticationFailure(error);
+                            return;
+                        }
+                        status.setText("分集读取失败：" + errorReason(error) + "。请重试。");
+                    }
+                });
+            }
+        });
+    }
+
+    private MediaRepository.Video episodeParent(String parentId, MediaRepository.Video current) {
+        MediaRepository.Video parent = new MediaRepository.Video();
+        parent.id = parentId;
+        parent.title = current == null ? "" : safe(current.title);
+        return parent;
+    }
+
+    private void renderEpisodeRows(Dialog dialog, LinearLayout rows,
+                                   List<MediaRepository.Video> episodes, MediaRepository.Video current) {
+        rows.removeAllViews();
+        if (episodes == null || episodes.isEmpty()) {
+            return;
+        }
+        String currentId = current == null ? "" : safe(current.id);
+        for (MediaRepository.Video episode : episodes) {
+            if (episode == null || !FeedPolicy.isPlayable(episode)) {
+                continue;
+            }
+            String episodeId = safe(episode.id);
+            String label = episodeLabel(episode);
+            String subtitle = episodeId.equals(currentId) ? "正在播放" : "点击切换";
+            LinearLayout row = dialogRow(label, subtitle);
+            row.setOnClickListener(v -> {
+                dialog.dismiss();
+                jumpToEpisode(episode);
+            });
+            rows.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
+        }
+    }
+
+    private String episodeLabel(MediaRepository.Video episode) {
+        StringBuilder label = new StringBuilder();
+        if (episode.season > 0) {
+            label.append("第 ").append(episode.season).append(" 季");
+        }
+        if (episode.episode > 0) {
+            if (label.length() > 0) {
+                label.append(" · ");
+            }
+            label.append("第 ").append(episode.episode).append(" 集");
+        }
+        String title = safe(episode.title);
+        if (!title.isEmpty()) {
+            if (label.length() > 0) {
+                label.append(" · ");
+            }
+            label.append(title);
+        }
+        return label.length() > 0 ? label.toString() : "未命名分集";
+    }
+
+    private void jumpToEpisode(MediaRepository.Video episode) {
+        int existing = -1;
+        List<MediaRepository.Video> videos = adapter.getVideos();
+        for (int i = 0; i < videos.size(); i++) {
+            if (episode.id.equals(videos.get(i).id)) {
+                existing = i;
+                break;
+            }
+        }
+        if (existing >= 0) {
+            pager.setCurrentItem(existing, true);
+            return;
+        }
+        List<MediaRepository.Video> extended = new java.util.ArrayList<>(videos);
+        extended.add(episode);
+        feedState.append(libraryGeneration, new MediaRepository.Page(
+                java.util.Collections.singletonList(episode), ""));
+        adapter.setVideos(extended);
+        pager.setCurrentItem(extended.size() - 1, true);
+    }
     private float lastHorizontalSeekPx;
 
     private void showSignedOut() {

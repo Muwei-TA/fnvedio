@@ -467,6 +467,7 @@ public final class FnApi implements MediaRepository {
             video.poster = posterUrl(firstPoster(value));
             video.season = firstInt(value, "season", "season_number");
             video.episode = firstInt(value, "episode", "episode_number");
+            video.parentId = firstString(value, "parent_guid", "ancestor_guid");
             result.add(video);
         }
         return result;

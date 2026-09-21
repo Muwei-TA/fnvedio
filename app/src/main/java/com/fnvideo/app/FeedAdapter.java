@@ -54,6 +54,8 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         void onSpeedPressStart(VideoViewHolder holder);
 
         void onSpeedPressEnd(VideoViewHolder holder);
+
+        void onEpisodesBrowse(VideoViewHolder holder);
     }
 
     private static final int BACKGROUND = Color.rgb(8, 10, 14);
@@ -182,6 +184,14 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         bottomInfo.addView(subtitle, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        TextView episodesButton = pillButton(pageContext, "剧集");
+        episodesButton.setContentDescription("浏览剧集分集");
+        episodesButton.setVisibility(View.GONE);
+        LinearLayout.LayoutParams episodesParams = new LinearLayout.LayoutParams(
+                dp(pageContext, 72), dp(pageContext, 38));
+        episodesParams.topMargin = dp(pageContext, 8);
+        bottomInfo.addView(episodesButton, episodesParams);
+
         LinearLayout controls = new LinearLayout(pageContext);
         controls.setGravity(Gravity.CENTER_VERTICAL);
         controls.setPadding(0, dp(pageContext, 12), 0, 0);
@@ -266,7 +276,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
 
         VideoViewHolder holder = new VideoViewHolder(page, playerView, title, subtitle, time,
                 seekBar, fit, loading, playIndicator, errorPanel, errorDetail, retry,
-                speedIndicator);
+                speedIndicator, episodesButton);
         GestureDetector pageGestures = new GestureDetector(pageContext,
                 new GestureDetector.SimpleOnGestureListener() {
                     private static final float SWIPE_THRESHOLD_PX = 24f;
@@ -327,6 +337,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         page.setOnClickListener(v -> listener.onPageTapped(holder));
         fit.setOnClickListener(v -> listener.onFitToggle(holder));
         retry.setOnClickListener(v -> listener.onRetry(holder));
+        episodesButton.setOnClickListener(v -> listener.onEpisodesBrowse(holder));
         playIndicator.setOnClickListener(v -> listener.onPageTapped(holder));
         seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -407,6 +418,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         private final TextView errorDetail;
         private final TextView retryButton;
         private final TextView speedIndicator;
+        private final TextView episodesButton;
         private MediaRepository.Video video;
         private boolean seeking;
         private boolean horizontalSeekActive;
@@ -416,7 +428,8 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
                                 TextView subtitleView, TextView timeView, SeekBar seekBar,
                                 TextView fitButton, ProgressBar loading, TextView playIndicator,
                                 LinearLayout errorPanel, TextView errorDetail,
-                                TextView retryButton, TextView speedIndicator) {
+                                TextView retryButton, TextView speedIndicator,
+                                TextView episodesButton) {
             super(page);
             this.playerView = playerView;
             this.titleView = titleView;
@@ -430,6 +443,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
             this.errorDetail = errorDetail;
             this.retryButton = retryButton;
             this.speedIndicator = speedIndicator;
+            this.episodesButton = episodesButton;
         }
 
         private void bind(MediaRepository.Video value) {
@@ -442,6 +456,9 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
             String subtitle = value == null ? "" : safe(value.subtitle);
             subtitleView.setText(subtitle);
             subtitleView.setVisibility(subtitle.isEmpty() ? View.GONE : View.VISIBLE);
+            boolean episode = value != null && "Episode".equalsIgnoreCase(safe(value.type));
+            episodesButton.setVisibility(episode && !safe(value.parentId).isEmpty()
+                    ? View.VISIBLE : View.GONE);
             resetStatus();
         }
 
