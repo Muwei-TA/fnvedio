@@ -4,6 +4,8 @@ import android.content.Context;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 /**
  * Process-local handoff for the explicit 随看 cursor. It is keyed by the
@@ -29,7 +31,7 @@ public final class PlaybackRuntime {
                                        String libraryId, String videoId) {
         setWatchCurrent(serverOrigin, accountId, libraryId, videoId);
         if (context == null) return;
-        String key = key(serverOrigin, accountId, libraryId);
+        String key = persistedKey(serverOrigin, accountId, libraryId);
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putString(key, safe(videoId)).apply();
     }
@@ -43,7 +45,7 @@ public final class PlaybackRuntime {
         String value = watchCurrent(serverOrigin, accountId, libraryId);
         if (!value.isEmpty() || context == null) return value;
         value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(key(serverOrigin, accountId, libraryId), "");
+                .getString(persistedKey(serverOrigin, accountId, libraryId), "");
         if (!value.isEmpty()) WATCH_CURRENT.put(key(serverOrigin, accountId, libraryId), value);
         return value;
     }
@@ -51,6 +53,23 @@ public final class PlaybackRuntime {
     private static String key(String serverOrigin, String accountId, String libraryId) {
         return safe(serverOrigin) + "\u0000" + safe(accountId) + "\u0000" + safe(libraryId);
     }
+
+    private static String persistedKey(String serverOrigin, String accountId, String libraryId) {
+        String raw = key(serverOrigin, accountId, libraryId);
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(raw.getBytes(StandardCharsets.UTF_8));
+            StringBuilder value = new StringBuilder("watch-");
+            for (byte item : digest) value.append(String.format(java.util.Locale.US, "%02x", item & 0xff));
+            return value.toString();
+        } catch (Exception error) {
+            // SHA-256 is required by every Android runtime; keep a printable
+            // fallback so SharedPreferences never receives control characters.
+            return "watch-" + raw.replaceAll("[^A-Za-z0-9._-]", "_");
+        }
+    }
+
+    static void clearForTests() { WATCH_CURRENT.clear(); }
 
     private static String safe(String value) {
         return value == null ? "" : value.trim();
