@@ -58,4 +58,28 @@ public class ServerAddressLoginTest {
             }
         }
     }
+    @Test public void nativeInputUsesDefaultNasPortOnlyForBareHosts() {
+        assertEquals("http://192.0.2.10:5666", ServerAddress.fromUserInput(" 192.0.2.10 "));
+        assertEquals("http://192.0.2.10:8080", ServerAddress.fromUserInput("192.0.2.10:8080"));
+        assertEquals("http://nas.example.test:5666", ServerAddress.fromUserInput("NAS.EXAMPLE.TEST/v"));
+        assertEquals("https://nas.example.test", ServerAddress.fromUserInput("HTTPS://NAS.EXAMPLE.TEST:443/v/login"));
+        assertEquals("https://nas.example.test:8443", ServerAddress.fromUserInput("https://nas.example.test:8443"));
+        assertEquals("http://192.0.2.10", ServerAddress.fromUserInput("http://192.0.2.10"));
+        assertEquals("http://[::1]:5666", ServerAddress.fromUserInput("[::1]"));
+    }
+
+    @Test public void nativeInputRejectsCredentialsQueriesAndFragmentsWithoutEchoingThem() {
+        for (String value : new String[]{"user:synthetic-password@nas.example.test",
+                "https://user:synthetic-password@nas.example.test", "nas.example.test?token=synthetic-secret",
+                "nas.example.test:5666/v/login?password=synthetic-secret", "nas.example.test#synthetic-secret",
+                "ftp://nas.example.test", "nas.example.test:65536", ""}) {
+            try {
+                ServerAddress.fromUserInput(value);
+                fail("Unsafe login address must be rejected");
+            } catch (IllegalArgumentException expected) {
+                assertFalse(expected.getMessage().contains("synthetic-"));
+            }
+        }
+    }
+
 }

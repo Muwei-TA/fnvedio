@@ -129,4 +129,53 @@ public class FeedGestureTest {
         holder.setSeeking(false);
         assertEquals(android.view.View.VISIBLE, overlay.getVisibility());
     }
+    private android.widget.TextView seekPreview() {
+        android.view.ViewGroup page = (android.view.ViewGroup) holder.itemView;
+        for (int i = 0; i < page.getChildCount(); i++) {
+            android.view.View child = page.getChildAt(i);
+            if ("拖动目标时间".contentEquals(child.getContentDescription() == null
+                    ? "" : child.getContentDescription())) {
+                return (android.widget.TextView) child;
+            }
+        }
+        throw new AssertionError("Seek preview missing");
+    }
+
+    @Test public void dragPreviewShowsTargetAndDurationWithoutPauseIcon() {
+        holder.setPlaying(true);
+        holder.setSeeking(true);
+        holder.setPlaying(false);
+        holder.showSeekPreview(250, 120_000L);
+        assertEquals("00:30 / 02:00", seekPreview().getText().toString());
+        assertEquals(android.view.View.VISIBLE, seekPreview().getVisibility());
+        assertEquals(android.view.View.GONE, playIndicator(holder.itemView).getVisibility());
+        holder.showSeekPreview(750, 120_000L);
+        assertEquals("01:30 / 02:00", seekPreview().getText().toString());
+        holder.setPlaying(true);
+        holder.setSeeking(false);
+        assertEquals(android.view.View.GONE, seekPreview().getVisibility());
+        assertEquals(android.view.View.GONE, playIndicator(holder.itemView).getVisibility());
+    }
+
+    @Test public void previewFormatsBeginningAndLongVideosAndClampsTarget() {
+        holder.setSeeking(true);
+        holder.showSeekPreview(-10, 3_600_000L);
+        assertEquals("00:00 / 1:00:00", seekPreview().getText().toString());
+        holder.showSeekPreview(1100, 3_600_000L);
+        assertEquals("1:00:00 / 1:00:00", seekPreview().getText().toString());
+    }
+
+    @Test public void canceledOrReboundSeekCannotLeavePreviewVisible() {
+        holder.setSeeking(true);
+        holder.showSeekPreview(500, 120_000L);
+        holder.setSeeking(false);
+        holder.showSeekPreview(600, 120_000L); // A late progress update must not restore it.
+        assertEquals(android.view.View.GONE, seekPreview().getVisibility());
+        holder.setSeeking(true);
+        holder.showSeekPreview(500, 120_000L);
+        holder.bind(null);
+        assertEquals(android.view.View.GONE, seekPreview().getVisibility());
+        assertFalse(holder.isSeeking());
+    }
+
 }

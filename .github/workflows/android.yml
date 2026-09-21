@@ -53,8 +53,37 @@ jobs:
       - name: Run lint
         run: ./gradlew lintDebug
 
+      - name: Restore persistent signing identity
+        if: github.event_name == 'push'
+        env:
+          SIGNING_KEYSTORE: ${{ secrets.ANDROID_SIGNING_KEYSTORE }}
+          SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
+          SIGNING_CERT_SHA256: ${{ secrets.ANDROID_SIGNING_CERT_SHA256 }}
+        run: |
+          test -n "$SIGNING_KEYSTORE" && test -n "$SIGNING_PASSWORD" && test -n "$SIGNING_CERT_SHA256"
+          umask 077
+          printf '%s' "$SIGNING_KEYSTORE" | base64 --decode > "$RUNNER_TEMP/fnvideo-signing.p12"
+
       - name: Build debug APK
+        env:
+          FNVIDEO_REQUIRE_SIGNING: ${{ github.event_name == 'push' }}
+          FNVIDEO_SIGNING_STORE: ${{ github.event_name == 'push' && format('{0}/fnvideo-signing.p12', runner.temp) || '' }}
+          FNVIDEO_SIGNING_PASSWORD: ${{ github.event_name == 'push' && secrets.ANDROID_SIGNING_PASSWORD || '' }}
         run: ./gradlew assembleDebug
+
+      - name: Verify persistent APK signature
+        if: github.event_name == 'push'
+        env:
+          EXPECTED_CERT_SHA256: ${{ secrets.ANDROID_SIGNING_CERT_SHA256 }}
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk > "$RUNNER_TEMP/apk-signature.txt"
+          actual=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt")
+          test "$actual" = "$EXPECTED_CERT_SHA256"
+          echo "Verified persistent APK signing certificate"
+
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/fnvideo-signing.p12"
 
       - name: Verify packaged APK version
         run: |
@@ -96,11 +125,11 @@ jobs:
           tag="build-${version_name}-${version_code}-${GITHUB_SHA::7}"
           gh release create "$tag" app/build/outputs/apk/debug/app-debug.apk \
             --repo "$GITHUB_REPOSITORY" \
-            --title "牛影随看 ${version_name} (${version_code})" \
+            --title "牛影随看 ${version_name}" \
             --notes "Automated debug APK built from ${GITHUB_SHA}." \
             --target "$GITHUB_SHA"
 
-      - name: Publish gesture fix test release
+      - name: Publish test release
         if: github.event_name == 'push' && github.ref == 'refs/heads/fix/horizontal-seek-start'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -112,18 +141,20 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk "$asset"
           notes="$RUNNER_TEMP/test-release-notes.md"
           cat > "$notes" <<NOTES
-          视频画面单击与横向拖动冲突修复测试版。
-          按下不触发单击；抬手单击；拖动阈值适配屏幕密度并锁定方向。
+          拖动播放进度时显示目标时间与总时长。
+          新增原生影视库登录页及局域网发现；输入服务器地址、用户名和密码连接。
+          APK 使用固定签名，今后使用同一签名且版本递增的构建可以覆盖升级。
+          旧临时签名包无法直接迁移到新签名；首次迁移仍可能需要卸载，卸载会清除本地设置。
 
           APK versionName: ${version_name}; versionCode: ${version_code}.
-          单元测试（含触摸回归）、Lint、编译和最终 APK 版本核验已通过。
-          Debug APK；手机实际手感尚待复测。
+          单元测试（含触摸回归）、Lint、编译、最终 APK 版本及固定签名核验已通过。
+          Debug APK；原生登录、局域网发现、手势及覆盖升级尚待真机验证。
           Commit: ${GITHUB_SHA}
           CI: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           NOTES
           gh release create "$tag" "$asset" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "牛影随看 ${version_name} (${version_code}) 测试版" \
+            --title "牛影随看 ${version_name} 测试版" \
             --notes-file "$notes" \
             --target "$GITHUB_SHA" --prerelease --latest=false
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json url,isPrerelease,assets

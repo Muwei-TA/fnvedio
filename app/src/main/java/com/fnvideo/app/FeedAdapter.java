@@ -255,6 +255,18 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
                 dp(pageContext, 74), dp(pageContext, 74), Gravity.CENTER);
         page.addView(playIndicator, playParams);
 
+        TextView seekPreview = text(pageContext, 25, PRIMARY, Typeface.BOLD);
+        seekPreview.setGravity(Gravity.CENTER);
+        seekPreview.setPadding(dp(pageContext, 24), dp(pageContext, 16),
+                dp(pageContext, 24), dp(pageContext, 16));
+        seekPreview.setBackground(roundBackground(Color.argb(225, 17, 20, 27), 16));
+        seekPreview.setVisibility(View.GONE);
+        seekPreview.setContentDescription("拖动目标时间");
+        seekPreview.setClickable(false);
+        page.addView(seekPreview, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER));
+
         LinearLayout errorPanel = new LinearLayout(pageContext);
         errorPanel.setOrientation(LinearLayout.VERTICAL);
         errorPanel.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -295,7 +307,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
 
         VideoViewHolder holder = new VideoViewHolder(page, playerView, poster, title, subtitle, time,
                 seekBar, fit, loading, playIndicator, errorPanel, errorDetail, retry,
-                speedIndicator, episodesButton);
+                speedIndicator, episodesButton, seekPreview);
         GestureDetector pageGestures = new GestureDetector(pageContext,
                 new GestureDetector.SimpleOnGestureListener() {
                     private final float swipeThreshold = Math.max(dp(pageContext, 24),
@@ -455,6 +467,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         private final TextView retryButton;
         private final TextView speedIndicator;
         private final TextView episodesButton;
+        private final TextView seekPreview;
         private MediaRepository.Video video;
         private boolean seeking;
         private boolean showPlayIndicator;
@@ -469,7 +482,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
                                 TextView fitButton, ProgressBar loading, TextView playIndicator,
                                 LinearLayout errorPanel, TextView errorDetail,
                                 TextView retryButton, TextView speedIndicator,
-                                TextView episodesButton) {
+                                TextView episodesButton, TextView seekPreview) {
             super(page);
             this.playerView = playerView;
             this.posterView = posterView;
@@ -485,6 +498,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
             this.retryButton = retryButton;
             this.speedIndicator = speedIndicator;
             this.episodesButton = episodesButton;
+            this.seekPreview = seekPreview;
         }
 
         void bind(MediaRepository.Video value) {
@@ -528,6 +542,9 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
 
         public void setSeeking(boolean value) {
             seeking = value;
+            if (!value) {
+                seekPreview.setVisibility(View.GONE);
+            }
             updatePlayIndicator();
         }
 
@@ -560,6 +577,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         }
 
         public void showLoading() {
+            seekPreview.setVisibility(View.GONE);
             showPlayIndicator = false;
             holderReady = false;
             loading.setVisibility(View.VISIBLE);
@@ -581,6 +599,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         }
 
         public void showError(String detail) {
+            seekPreview.setVisibility(View.GONE);
             showPlayIndicator = false;
             holderReady = false;
             loading.setVisibility(View.GONE);
@@ -623,8 +642,13 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
 
         public void showSeekPreview(int progress, long durationMs) {
             long preview = durationMs > 0 && durationMs != androidx.media3.common.C.TIME_UNSET
-                    ? durationMs * progress / 1000L : 0L;
-            timeView.setText(formatTime(preview) + " / " + formatTime(durationMs));
+                    ? durationMs * Math.max(0, Math.min(1000, progress)) / 1000L : 0L;
+            String label = formatTime(preview) + " / " + formatTime(durationMs);
+            timeView.setText(label);
+            if (seeking) {
+                seekPreview.setText(label);
+                seekPreview.setVisibility(View.VISIBLE);
+            }
         }
 
         private void resetStatus() {
@@ -645,7 +669,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
     }
 
     private static String formatTime(long millis) {
-        if (millis <= 0 || millis == androidx.media3.common.C.TIME_UNSET) {
+        if (millis < 0 || millis == androidx.media3.common.C.TIME_UNSET) {
             return "--:--";
         }
         long totalSeconds = millis / 1000L;
