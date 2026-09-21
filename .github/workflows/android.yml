@@ -99,3 +99,31 @@ jobs:
             --title "牛影随看 ${version_name} (${version_code})" \
             --notes "Automated debug APK built from ${GITHUB_SHA}." \
             --target "$GITHUB_SHA"
+
+      - name: Publish gesture fix test release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/fix/horizontal-seek-start'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version_name=$(sed -n "s/.*versionName ['\"]\([^'\"]*\)['\"].*/\1/p" app/build.gradle | head -n 1)
+          version_code=$(sed -n "s/.*versionCode \([0-9][0-9]*\).*/\1/p" app/build.gradle | head -n 1)
+          tag="v${version_name}"
+          asset="$RUNNER_TEMP/fnvideo-v${version_name}-${version_code}-debug.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$asset"
+          notes="$RUNNER_TEMP/test-release-notes.md"
+          cat > "$notes" <<NOTES
+          视频画面单击与横向拖动冲突修复测试版。
+          按下不触发单击；抬手单击；拖动阈值适配屏幕密度并锁定方向。
+
+          APK versionName: ${version_name}; versionCode: ${version_code}.
+          单元测试（含触摸回归）、Lint、编译和最终 APK 版本核验已通过。
+          Debug APK；手机实际手感尚待复测。
+          Commit: ${GITHUB_SHA}
+          CI: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          NOTES
+          gh release create "$tag" "$asset" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "牛影随看 ${version_name} (${version_code}) 测试版" \
+            --notes-file "$notes" \
+            --target "$GITHUB_SHA" --prerelease --latest=false
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json url,isPrerelease,assets
