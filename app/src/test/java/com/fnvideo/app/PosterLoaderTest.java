@@ -45,6 +45,7 @@ public final class PosterLoaderTest {
 
     @Test public void sameOriginImageReceivesAuthorization() throws Exception {
         origin.enqueue(imageResponse());
+        origin.enqueue(imageResponse());
         PosterLoader loader = new PosterLoader(origin.url("/v").toString(), "poster-session");
         try {
             CountDownLatch loaded = new CountDownLatch(1);
@@ -61,6 +62,9 @@ public final class PosterLoaderTest {
 
     @Test public void crossOriginRedirectDropsAuthorization() throws Exception {
         publicServer.enqueue(imageResponse());
+        publicServer.enqueue(imageResponse());
+        origin.enqueue(new MockResponse().setResponseCode(302)
+                .setHeader("Location", publicServer.url("/public/poster.png").toString()));
         origin.enqueue(new MockResponse().setResponseCode(302)
                 .setHeader("Location", publicServer.url("/public/poster.png").toString()));
         PosterLoader loader = new PosterLoader(origin.url("/v").toString(), "poster-session");
@@ -83,6 +87,9 @@ public final class PosterLoaderTest {
     @Test public void sameOriginRedirectRetainsAuthorization() throws Exception {
         origin.enqueue(new MockResponse().setResponseCode(302)
                 .setHeader("Location", origin.url("/v/api/v1/sys/img/final.png").toString()));
+        origin.enqueue(new MockResponse().setResponseCode(302)
+                .setHeader("Location", origin.url("/v/api/v1/sys/img/final.png").toString()));
+        origin.enqueue(imageResponse());
         origin.enqueue(imageResponse());
         PosterLoader loader = new PosterLoader(origin.url("/v").toString(), "poster-session");
         try {
