@@ -24,7 +24,7 @@
 
 采用原生 Android 单应用，Java + AndroidX ViewPager2 + Media3 ExoPlayer。Java 是降低当前构建链和集成复杂度的工程选择；不影响后续逐模块迁移 Kotlin。首版单 Gradle app 模块，通过包与接口隔离职责，不引入没有独立发布需求的多模块工程。
 
-相比把整个网页包进 WebView，原生播放器能明确控制手势、单播放器占用和 Android 生命周期。WebView 只承担官方登录，避免重新实现密码协议。相比新增 NAS 中转服务，直连现有服务不需要改 NAS 部署，但必须承担非公开 API 随版本变化的兼容风险。
+相比把整个网页包进 WebView，原生播放器能明确控制手势、单播放器占用和 Android 生命周期。登录由原生连接表单承担，经 FnApi 调用已核对的影视密码接口；密码不持久化。相比新增 NAS 中转服务，直连现有服务不需要改 NAS 部署，但必须承担非公开 API 随版本变化的兼容风险。
 
 ## 4. 职责与依赖
 
@@ -36,7 +36,7 @@ flowchart TD
     Fn --> NAS[现有飞牛影视 HTTP 服务]
     UI --> Player[单实例 Media3 播放控制]
     Player --> Resume[本机续播记录]
-    Login[官方登录 WebView] --> Session[Keystore 加密会话存储]
+    Login[原生账号登录] --> Session[Keystore 加密会话存储]
     Fn --> Session
 ```
 
@@ -44,7 +44,7 @@ flowchart TD
 - **FeedPolicy**：可播放类型（电影、普通视频、分集）的唯一规则来源；Query 引用规则，FeedState 执行目录项过滤。飞牛适配器只将查询条件映射为服务参数。
 - **飞牛适配器**：隐藏鉴权、签名、响应结构、分页及“媒体详情 → 文件 → 播放地址”的复杂性；向内返回简单模型。
 - **播放控制**：唯一播放器实例，绑定当前页，处理暂停、seek、缩放、错误和资源释放；不自行查询片库。
-- **会话存储**：加密保存令牌，保留服务器地址；不保存密码，不写入 Git、日志或 APK。退出清理令牌和登录 WebView 状态。
+- **会话存储**：加密保存令牌，保留服务器地址；不保存密码，不写入 Git、日志或 APK。退出清理令牌。
 - **UI**：渲染状态和转发操作；不拼接 API 地址、不解析服务返回 JSON。
 
 实现合并纯转发层。MainActivity 通过 MediaRepository 使用数据，只有组装处创建 FnApi；FeedState 与 FeedPolicy 不依赖 Android。MainActivity 仍负责较多界面组装和播放器生命周期编排，是首版的可维护性限制；后续扩展复杂播放策略前应提取相应控制器。
@@ -68,7 +68,7 @@ SessionStore -> serverOrigin + encryptedToken
 
 ## 6. 播放与并发流程
 
-1. 未登录显示连接页；用户在指定 NAS 原站登录，成功从 WebView CookieManager 读取已核实的 `Trim-MC-token` 并加密保存。密码不进入原生存储；登录页关闭后清理 WebView Cookie 与 WebStorage。
+1. 未登录显示原生连接页；用户选择局域网发现的服务或手填地址。FnApi 对密码作 SHA-256 后向指定源的 `/v/api/v2/user/loginByPassword` 提交 `username/password/app_name`，返回令牌仍由 SessionStore 加密保存；密码和哈希不持久化。拒绝认证请求重定向，关闭页面丢弃迟到结果。
 2. 获取首批条目后显示 Feed；靠近末尾时请求下一页，按稳定 ID 去重。搜索或换库重置分页并增加请求代数。
 3. 页面滚动结束后才激活新视频。保存旧位置，停止旧播放，再解析新项播放地址。
 4. 所有网络工作离开主线程；异步结果只有在请求代数、当前媒体 ID 和会话仍匹配时才能应用。
@@ -80,7 +80,7 @@ SessionStore -> serverOrigin + encryptedToken
 
 ## 7. 安全与数据
 
-仅需网络权限。允许用户已指定的局域网 HTTP；登录页面必须同源，禁止忽略 TLS 错误或跳往任意第三方。API 认证头只发给 NAS；如果媒体 URL 跳到远程存储，必须审查重定向与认证头转发，避免泄漏 NAS 令牌。
+仅需网络权限。允许用户已指定的局域网 HTTP；密码登录请求必须发往用户选择的服务，禁止忽略 TLS 错误或跟随重定向。API 认证头只发给 NAS；如果媒体 URL 跳到远程存储，必须审查重定向与认证头转发，避免泄漏 NAS 令牌。
 
 已用 Media3 OkHttp 数据源的每次网络请求拦截器执行同源限制，跨域时清除 Authorization、Play-Link、Cookie 和 authx。User-Agent 与获取网盘直链时一致。Media3 的非稳定接口仅在三个播放适配类显式 OptIn，依赖固定版本；未关闭 lint 规则。
 

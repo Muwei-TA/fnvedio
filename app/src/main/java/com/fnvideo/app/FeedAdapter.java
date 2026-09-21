@@ -1,13 +1,18 @@
 package com.fnvideo.app;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewConfiguration;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.SeekBar;
@@ -42,6 +47,18 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         void onSeekChanged(VideoViewHolder holder, int progress);
 
         void onSeekStop(VideoViewHolder holder, int progress);
+
+        void onHorizontalSeekStart(VideoViewHolder holder);
+
+        void onHorizontalSeek(VideoViewHolder holder, float deltaPx);
+
+        void onHorizontalSeekEnd(VideoViewHolder holder);
+
+        void onSpeedPressStart(VideoViewHolder holder);
+
+        void onSpeedPressEnd(VideoViewHolder holder);
+
+        void onEpisodesBrowse(VideoViewHolder holder);
     }
 
     private static final int BACKGROUND = Color.rgb(8, 10, 14);
@@ -51,10 +68,17 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
     private static final int SURFACE = Color.argb(190, 20, 23, 30);
 
     private final Listener listener;
+    private final PosterLoader posterLoader;
     private List<MediaRepository.Video> videos = Collections.emptyList();
 
     public FeedAdapter(@NonNull Context context, @NonNull Listener listener) {
+        this(context, listener, null);
+    }
+
+    public FeedAdapter(@NonNull Context context, @NonNull Listener listener,
+                       PosterLoader posterLoader) {
         this.listener = listener;
+        this.posterLoader = posterLoader;
     }
 
     public void setVideos(List<MediaRepository.Video> values) {
@@ -138,6 +162,15 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
+        ImageView poster = new ImageView(pageContext);
+        poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        poster.setBackgroundColor(Color.BLACK);
+        poster.setVisibility(View.GONE);
+        poster.setClickable(false);
+        page.addView(poster, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
         View bottomShade = new View(pageContext);
         GradientDrawable shade = new GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
@@ -169,6 +202,14 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         subtitle.setPadding(0, dp(pageContext, 5), 0, 0);
         bottomInfo.addView(subtitle, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView episodesButton = pillButton(pageContext, "剧集");
+        episodesButton.setContentDescription("浏览剧集分集");
+        episodesButton.setVisibility(View.GONE);
+        LinearLayout.LayoutParams episodesParams = new LinearLayout.LayoutParams(
+                dp(pageContext, 72), dp(pageContext, 38));
+        episodesParams.topMargin = dp(pageContext, 8);
+        bottomInfo.addView(episodesButton, episodesParams);
 
         LinearLayout controls = new LinearLayout(pageContext);
         controls.setGravity(Gravity.CENTER_VERTICAL);
@@ -214,6 +255,18 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
                 dp(pageContext, 74), dp(pageContext, 74), Gravity.CENTER);
         page.addView(playIndicator, playParams);
 
+        TextView seekPreview = text(pageContext, 25, PRIMARY, Typeface.BOLD);
+        seekPreview.setGravity(Gravity.CENTER);
+        seekPreview.setPadding(dp(pageContext, 24), dp(pageContext, 16),
+                dp(pageContext, 24), dp(pageContext, 16));
+        seekPreview.setBackground(roundBackground(Color.argb(225, 17, 20, 27), 16));
+        seekPreview.setVisibility(View.GONE);
+        seekPreview.setContentDescription("拖动目标时间");
+        seekPreview.setClickable(false);
+        page.addView(seekPreview, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER));
+
         LinearLayout errorPanel = new LinearLayout(pageContext);
         errorPanel.setOrientation(LinearLayout.VERTICAL);
         errorPanel.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -242,12 +295,96 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         errorPanel.addView(retry, new LinearLayout.LayoutParams(
                 dp(pageContext, 112), dp(pageContext, 44)));
 
-        VideoViewHolder holder = new VideoViewHolder(page, playerView, title, subtitle, time,
-                seekBar, fit, loading, playIndicator, errorPanel, errorDetail, retry);
+        TextView speedIndicator = pillButton(pageContext, "2.0x");
+        speedIndicator.setTextSize(15);
+        speedIndicator.setVisibility(View.GONE);
+        speedIndicator.setContentDescription("倍速播放中");
+        FrameLayout.LayoutParams speedParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(pageContext, 40),
+                Gravity.CENTER_HORIZONTAL | Gravity.TOP);
+        speedParams.topMargin = dp(pageContext, 120);
+        page.addView(speedIndicator, speedParams);
+
+        VideoViewHolder holder = new VideoViewHolder(page, playerView, poster, title, subtitle, time,
+                seekBar, fit, loading, playIndicator, errorPanel, errorDetail, retry,
+                speedIndicator, episodesButton, seekPreview);
+        GestureDetector pageGestures = new GestureDetector(pageContext,
+                new GestureDetector.SimpleOnGestureListener() {
+                    private final float swipeThreshold = Math.max(dp(pageContext, 24),
+                            ViewConfiguration.get(pageContext).getScaledTouchSlop());
+                    private boolean verticalDrag;
+
+                    @Override
+                    public boolean onDown(MotionEvent event) {
+                        verticalDrag = false;
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onScroll(MotionEvent begin, MotionEvent current,
+                                            float distanceX, float distanceY) {
+                        float totalX = current.getX() - begin.getX();
+                        float totalY = current.getY() - begin.getY();
+                        if (holder.isSpeedPressed() || verticalDrag) {
+                            return true;
+                        }
+                        if (!holder.isHorizontalSeekActive()) {
+                            if (Math.max(Math.abs(totalX), Math.abs(totalY)) <= swipeThreshold) {
+                                return true;
+                            }
+                            if (Math.abs(totalY) >= Math.abs(totalX)) {
+                                verticalDrag = true;
+                                return true;
+                            }
+                            holder.markHorizontalSeekActive(true);
+                            if (holder.itemView.getParent() != null) {
+                                holder.itemView.getParent().requestDisallowInterceptTouchEvent(true);
+                            }
+                            listener.onHorizontalSeekStart(holder);
+                        }
+                        listener.onHorizontalSeek(holder, totalX);
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onSingleTapUp(MotionEvent event) {
+                        holder.playerView.performClick();
+                        return true;
+                    }
+
+                    @Override
+                    public void onLongPress(MotionEvent event) {
+                        if (holder.isHorizontalSeekActive()) {
+                            return;
+                        }
+                        holder.setSpeedPressed(true);
+                        listener.onSpeedPressStart(holder);
+                    }
+                });
+        View.OnTouchListener pageTouch = (view, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_UP
+                    || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                if (holder.isHorizontalSeekActive()) {
+                    holder.markHorizontalSeekActive(false);
+                    listener.onHorizontalSeekEnd(holder);
+                }
+                if (holder.isSpeedPressed()) {
+                    holder.setSpeedPressed(false);
+                    listener.onSpeedPressEnd(holder);
+                }
+            }
+            pageGestures.onTouchEvent(event);
+            // Own the full stream: GestureDetector may return false for UP/CANCEL.
+            // Falling through would let PlayerView dispatch an extra click.
+            return true;
+        };
+        playerView.setOnTouchListener(pageTouch);
+        page.setOnTouchListener(pageTouch);
         playerView.setOnClickListener(v -> listener.onPageTapped(holder));
         page.setOnClickListener(v -> listener.onPageTapped(holder));
         fit.setOnClickListener(v -> listener.onFitToggle(holder));
         retry.setOnClickListener(v -> listener.onRetry(holder));
+        episodesButton.setOnClickListener(v -> listener.onEpisodesBrowse(holder));
         playIndicator.setOnClickListener(v -> listener.onPageTapped(holder));
         seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -317,6 +454,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
 
     public final class VideoViewHolder extends RecyclerView.ViewHolder {
         public final PlayerView playerView;
+        public final ImageView posterView;
         private final TextView titleView;
         private final TextView subtitleView;
         private final TextView timeView;
@@ -327,16 +465,27 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         private final LinearLayout errorPanel;
         private final TextView errorDetail;
         private final TextView retryButton;
+        private final TextView speedIndicator;
+        private final TextView episodesButton;
+        private final TextView seekPreview;
         private MediaRepository.Video video;
         private boolean seeking;
+        private boolean showPlayIndicator;
+        private boolean horizontalSeekActive;
+        private boolean speedPressed;
+        private int posterBindGeneration;
+        private boolean holderReady;
 
-        private VideoViewHolder(FrameLayout page, PlayerView playerView, TextView titleView,
+        private VideoViewHolder(FrameLayout page, PlayerView playerView, ImageView posterView,
+                                TextView titleView,
                                 TextView subtitleView, TextView timeView, SeekBar seekBar,
                                 TextView fitButton, ProgressBar loading, TextView playIndicator,
                                 LinearLayout errorPanel, TextView errorDetail,
-                                TextView retryButton) {
+                                TextView retryButton, TextView speedIndicator,
+                                TextView episodesButton, TextView seekPreview) {
             super(page);
             this.playerView = playerView;
+            this.posterView = posterView;
             this.titleView = titleView;
             this.subtitleView = subtitleView;
             this.timeView = timeView;
@@ -347,10 +496,28 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
             this.errorPanel = errorPanel;
             this.errorDetail = errorDetail;
             this.retryButton = retryButton;
+            this.speedIndicator = speedIndicator;
+            this.episodesButton = episodesButton;
+            this.seekPreview = seekPreview;
         }
 
-        private void bind(MediaRepository.Video value) {
+        void bind(MediaRepository.Video value) {
             video = value;
+            posterBindGeneration++;
+            final int generation = posterBindGeneration;
+            String posterUrl = value == null ? "" : safe(value.poster);
+            posterView.setImageDrawable(null);
+            posterView.setVisibility(View.GONE);
+            if (!posterUrl.isEmpty() && posterLoader != null) {
+                posterLoader.load(posterUrl, bitmap -> {
+                    if (posterBindGeneration == generation) {
+                        posterView.setImageBitmap(bitmap);
+                        if (!holderReady) {
+                            posterView.setVisibility(View.VISIBLE);
+                        }
+                    }
+                });
+            }
             String title = value == null ? "" : safe(value.title);
             if (title.isEmpty() && value != null) {
                 title = safe(value.id);
@@ -359,6 +526,9 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
             String subtitle = value == null ? "" : safe(value.subtitle);
             subtitleView.setText(subtitle);
             subtitleView.setVisibility(subtitle.isEmpty() ? View.GONE : View.VISIBLE);
+            boolean episode = value != null && "Episode".equalsIgnoreCase(safe(value.type));
+            episodesButton.setVisibility(episode && !safe(value.parentId).isEmpty()
+                    ? View.VISIBLE : View.GONE);
             resetStatus();
         }
 
@@ -372,9 +542,44 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
 
         public void setSeeking(boolean value) {
             seeking = value;
+            if (!value) {
+                seekPreview.setVisibility(View.GONE);
+            }
+            updatePlayIndicator();
+        }
+
+        public boolean isHorizontalSeekActive() {
+            return horizontalSeekActive;
+        }
+
+        public void markHorizontalSeekActive(boolean value) {
+            horizontalSeekActive = value;
+        }
+
+        public boolean isSpeedPressed() {
+            return speedPressed;
+        }
+
+        public void setSpeedPressed(boolean value) {
+            speedPressed = value;
+        }
+
+        public void showSpeedIndicator(float speed) {
+            speedIndicator.setText(java.text.DecimalFormatSymbols
+                    .getInstance(java.util.Locale.US).getDecimalSeparator() == '.'
+                    ? String.format(java.util.Locale.US, "%.1fx", speed)
+                    : String.valueOf(speed));
+            speedIndicator.setVisibility(View.VISIBLE);
+        }
+
+        public void hideSpeedIndicator() {
+            speedIndicator.setVisibility(View.GONE);
         }
 
         public void showLoading() {
+            seekPreview.setVisibility(View.GONE);
+            showPlayIndicator = false;
+            holderReady = false;
             loading.setVisibility(View.VISIBLE);
             errorPanel.setVisibility(View.GONE);
             playIndicator.setVisibility(View.GONE);
@@ -387,11 +592,16 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         }
 
         public void showReady() {
+            holderReady = true;
             loading.setVisibility(View.GONE);
             errorPanel.setVisibility(View.GONE);
+            posterView.setVisibility(View.GONE);
         }
 
         public void showError(String detail) {
+            seekPreview.setVisibility(View.GONE);
+            showPlayIndicator = false;
+            holderReady = false;
             loading.setVisibility(View.GONE);
             playIndicator.setVisibility(View.GONE);
             errorDetail.setText(detail == null || detail.trim().isEmpty()
@@ -400,7 +610,13 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         }
 
         public void setPlaying(boolean playing) {
-            playIndicator.setVisibility(playing ? View.GONE : View.VISIBLE);
+            showPlayIndicator = !playing;
+            updatePlayIndicator();
+        }
+
+        private void updatePlayIndicator() {
+            playIndicator.setVisibility(showPlayIndicator && !seeking
+                    ? View.VISIBLE : View.GONE);
         }
 
         public void setFitMode(boolean zoom) {
@@ -426,11 +642,18 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
 
         public void showSeekPreview(int progress, long durationMs) {
             long preview = durationMs > 0 && durationMs != androidx.media3.common.C.TIME_UNSET
-                    ? durationMs * progress / 1000L : 0L;
-            timeView.setText(formatTime(preview) + " / " + formatTime(durationMs));
+                    ? durationMs * Math.max(0, Math.min(1000, progress)) / 1000L : 0L;
+            String label = formatTime(preview) + " / " + formatTime(durationMs);
+            timeView.setText(label);
+            if (seeking) {
+                seekPreview.setText(label);
+                seekPreview.setVisibility(View.VISIBLE);
+            }
         }
 
         private void resetStatus() {
+            showPlayIndicator = false;
+            holderReady = false;
             loading.setVisibility(View.GONE);
             errorPanel.setVisibility(View.GONE);
             playIndicator.setVisibility(View.GONE);
@@ -446,7 +669,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
     }
 
     private static String formatTime(long millis) {
-        if (millis <= 0 || millis == androidx.media3.common.C.TIME_UNSET) {
+        if (millis < 0 || millis == androidx.media3.common.C.TIME_UNSET) {
             return "--:--";
         }
         long totalSeconds = millis / 1000L;

@@ -11,16 +11,44 @@ android {
         applicationId 'com.fnvideo.app'
         minSdk 26
         targetSdk 35
-        versionCode 2
-        versionName '1.0.1'
+        versionCode 8
+        versionName '1.2.0'
         testInstrumentationRunner 'android.test.InstrumentationTestRunner'
     }
 
+    // Published builds must use the persistent repository signing identity.
+    def signingPath = System.getenv('FNVIDEO_SIGNING_STORE')
+    def signingPassword = System.getenv('FNVIDEO_SIGNING_PASSWORD')
+    if (System.getenv('FNVIDEO_REQUIRE_SIGNING') == 'true'
+            && (!signingPath || !signingPassword || !file(signingPath).isFile())) {
+        throw new GradleException('Persistent APK signing credentials are required')
+    }
+    signingConfigs {
+        if (signingPath && signingPassword) {
+            persistent {
+                storeFile file(signingPath)
+                storeType 'PKCS12'
+                storePassword signingPassword
+                keyAlias 'fnvideo'
+                keyPassword signingPassword
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            if (signingPath && signingPassword) {
+                signingConfig signingConfigs.persistent
+            }
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
+    }
+
+    testOptions {
+        unitTests.includeAndroidResources = true
     }
 
     compileOptions {
@@ -42,6 +70,7 @@ dependencies {
     implementation 'androidx.media3:media3-ui:1.5.1'
 
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
     androidTestImplementation 'junit:junit:4.13.2'
     testImplementation 'org.json:json:20240303'
     testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'

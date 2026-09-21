@@ -2,14 +2,7 @@ import org.gradle.api.initialization.resolve.RepositoriesMode
 
 pluginManagement {
     repositories {
-        maven {
-            url = uri('https://redirector.gvt1.com/edgedl/android/maven2')
-            content {
-                includeGroupByRegex 'com\\.android.*'
-                includeGroupByRegex 'androidx.*'
-                includeGroupByRegex 'com\\.google\\.testing\\.platform.*'
-            }
-        }
+        maven { url = uri('https://dl.google.com/dl/android/maven2') }
         maven { url = uri('https://maven.aliyun.com/repository/public') }
         google()
         gradlePluginPortal()
@@ -26,14 +19,7 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        maven {
-            url = uri('https://redirector.gvt1.com/edgedl/android/maven2')
-            content {
-                includeGroupByRegex 'com\\.android.*'
-                includeGroupByRegex 'androidx.*'
-                includeGroupByRegex 'com\\.google\\.testing\\.platform.*'
-            }
-        }
+        maven { url = uri('https://dl.google.com/dl/android/maven2') }
         maven { url = uri('https://maven.aliyun.com/repository/public') }
         google()
         mavenCentral()

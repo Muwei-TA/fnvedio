@@ -8,6 +8,25 @@ import java.util.Locale;
 public final class ServerAddress {
     private ServerAddress() { }
 
+    /** Bare host/IP inputs use the standard FnOS port; explicit URLs keep their port. */
+    public static String fromUserInput(String input) {
+        String value = input == null ? "" : input.trim();
+        if (value.isEmpty()) throw new IllegalArgumentException("请输入服务器 IP 或地址");
+        if (!value.contains("://")) {
+            URI uri = parse("http://" + value);
+            if (uri.getPort() == -1) {
+                try {
+                    uri = new URI("http", null, uri.getHost(), 5666,
+                            uri.getPath(), uri.getQuery(), uri.getFragment());
+                } catch (URISyntaxException invalid) {
+                    throw new IllegalArgumentException("服务器地址格式无效");
+                }
+            }
+            value = uri.toString();
+        }
+        return normalize(value);
+    }
+
     public static String normalize(String input) {
         URI uri = parse(input);
         if (uri.getRawQuery() != null || uri.getRawFragment() != null) {

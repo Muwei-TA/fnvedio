@@ -27,7 +27,7 @@ import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * Read-only client for the Trim/FnOS media API.
+ * Media and explicit password-login client for the Trim/FnOS API.
  *
  * <p>The web client signs every API request with the authx header.
  * This class keeps that protocol inside the adapter. The token is only sent
@@ -60,6 +60,113 @@ public final class FnApi implements MediaRepository {
         // The web client sends a FingerprintJS visitorId as the stream "ip".
         // Keep a per-client opaque value without persisting or exposing it.
         this.visitorId = UUID.randomUUID().toString().replace("-", "");
+    }
+
+    /** Native password login, matching the NAS v2 web contract. */
+    public static String login(String origin, String username, char[] password) throws IOException {
+        return new LoginCall(origin, username, password).execute();
+    }
+
+    /** Owns and clears the supplied password even if cancelled before execute(). */
+    public static final class LoginCall {
+        private final String origin;
+        private final String username;
+        private final char[] password;
+        private volatile boolean cancelled;
+        private volatile okhttp3.Call call;
+
+        public LoginCall(String origin, String username, char[] password) {
+            this.origin = origin;
+            this.username = username;
+            this.password = password;
+        }
+
+        public void cancel() {
+            cancelled = true;
+            okhttp3.Call running = call;
+            if (running != null) running.cancel();
+            clearPassword();
+        }
+
+        private void clearPassword() {
+            if (password != null) java.util.Arrays.fill(password, '\0');
+        }
+
+        public String execute() throws IOException {
+            try {
+                if (cancelled) throw new LoginFailure("登录已取消");
+                if (username == null || username.trim().isEmpty() || password == null || password.length == 0) {
+                    throw new LoginFailure("请输入用户名和密码");
+                }
+                java.nio.ByteBuffer encoded = StandardCharsets.UTF_8.encode(java.nio.CharBuffer.wrap(password));
+                byte[] bytes = new byte[encoded.remaining()];
+                encoded.get(bytes);
+                byte[] digest;
+                try {
+                    digest = MessageDigest.getInstance("SHA-256").digest(bytes);
+                } finally {
+                    java.util.Arrays.fill(bytes, (byte) 0);
+                    if (encoded.hasArray()) java.util.Arrays.fill(encoded.array(), (byte) 0);
+                    clearPassword();
+                }
+                StringBuilder hash = new StringBuilder(64);
+                for (byte value : digest) hash.append(String.format(java.util.Locale.US, "%02x", value & 0xff));
+                JSONObject body = new JSONObject();
+                body.put("username", username.trim());
+                body.put("password", hash.toString());
+                body.put("app_name", "trimemedia-web");
+                FnApi api = new FnApi(origin, "");
+                URL url = new URL(api.apiUrl("/api/v2/user/loginByPassword"));
+                String json = body.toString();
+                okhttp3.Request request = new okhttp3.Request.Builder().url(url)
+                        .header("Accept", "application/json")
+                        .header("X-Trim-Client", CLIENT).header("X-Trim-Client-Version", CLIENT_VERSION)
+                        .header("authx", api.authx("POST", url, "", json))
+                        .post(okhttp3.RequestBody.create(json, okhttp3.MediaType.get("application/json; charset=UTF-8")))
+                        .build();
+                call = LOGIN_CLIENT.newCall(request);
+                if (cancelled) { call.cancel(); throw new LoginFailure("登录已取消"); }
+                try (okhttp3.Response response = call.execute()) {
+                    int status = response.code();
+                    if (status >= 300 && status < 400) throw new LoginFailure("服务器要求跳转，请直接填写最终影视服务地址");
+                    if (status == 404) throw new LoginFailure("此服务不支持密码登录，请检查地址或升级飞牛影视");
+                    if (status == 429) throw new LoginFailure("登录尝试过于频繁，请稍后重试");
+                    if (!response.isSuccessful() || response.body() == null) {
+                        throw new LoginFailure("登录失败，请检查用户名、密码及影视访问权限");
+                    }
+                    // Bound response size and never surface server text or credential echoes.
+                    JSONObject envelope = new JSONObject(response.peekBody(64 * 1024).string());
+                    int code = envelope.optInt("code", 0);
+                    if (code == 0) code = envelope.optInt("errno", 0);
+                    if (code != 0) throw new LoginFailure("登录失败，请检查用户名、密码及影视访问权限");
+                    JSONObject data = envelope.has("data") ? envelope.optJSONObject("data") : envelope;
+                    if (data == null) throw new LoginFailure("登录响应无效，请检查影视服务版本");
+                    String token = firstString(data, "token", "access_token");
+                    if (token.isEmpty()) throw new LoginFailure("登录未返回会话，请检查账号的影视访问权限");
+                    if (cancelled) throw new LoginFailure("登录已取消");
+                    return token;
+                }
+            } catch (LoginFailure error) {
+                throw error;
+            } catch (JSONException error) {
+                throw new LoginFailure("登录响应无效，请检查影视服务版本");
+            } catch (javax.net.ssl.SSLException error) {
+                throw new LoginFailure("无法验证服务器证书，请检查 HTTPS 配置");
+            } catch (Exception error) {
+                throw new LoginFailure(cancelled ? "登录已取消" : "无法完成登录，请检查地址、网络和影视服务状态");
+            } finally {
+                clearPassword();
+            }
+        }
+    }
+
+    private static final okhttp3.OkHttpClient LOGIN_CLIENT = new okhttp3.OkHttpClient.Builder()
+            .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(25, java.util.concurrent.TimeUnit.SECONDS).build();
+
+    private static final class LoginFailure extends IOException {
+        LoginFailure(String message) { super(message); }
     }
 
     @Override
@@ -132,6 +239,33 @@ public final class FnApi implements MediaRepository {
     public Source resolveCompatible(Video video) throws Exception {
         return resolve(video, true);
     }
+
+    @Override
+    public List<Video> seriesEpisodes(Video series) throws Exception {
+        if (series == null || safe(series.id).isEmpty()) {
+            throw new FnApiException("Cannot list episodes: series id is empty");
+        }
+        // The web season screen sends parent_guid for the container and sorts
+        // by episode index; the same /item/list route serves both screens.
+        JSONObject body = new JSONObject();
+        body.put("parent_guid", series.id);
+        body.put("sort_type", "ASC");
+        body.put("sort_column", "episode");
+        body.put("exclude_grouped_video", 1);
+        body.put("page", 1);
+        body.put("page_size", PAGE_SIZE);
+
+        Object data = requestData("POST", API_V1 + "/item/list", null, body);
+        JSONObject listing = asObject(data, "episode list");
+        JSONArray values = listing.optJSONArray("list");
+        List<Video> episodes = parseVideos(values == null ? new JSONArray() : values);
+        episodes.sort(SERIES_ORDER);
+        return episodes;
+    }
+
+    private static final java.util.Comparator<MediaRepository.Video> SERIES_ORDER =
+            java.util.Comparator.comparingInt((MediaRepository.Video video) -> video.season)
+                    .thenComparingInt(video -> video.episode);
 
     private Source resolve(Video video, boolean forceCompatible) throws Exception {
         if (video == null || safe(video.id).isEmpty()) {
@@ -438,6 +572,9 @@ public final class FnApi implements MediaRepository {
             video.title = firstString(value, "title", "name", "sort_title");
             video.subtitle = firstString(value, "subtitle", "sub_title", "overview");
             video.poster = posterUrl(firstPoster(value));
+            video.season = firstInt(value, "season", "season_number");
+            video.episode = firstInt(value, "episode", "episode_number");
+            video.parentId = firstString(value, "parent_guid", "ancestor_guid");
             result.add(video);
         }
         return result;
@@ -599,9 +736,14 @@ public final class FnApi implements MediaRepository {
         return 0L;
     }
 
-    private static int firstInt(JSONObject value, String key) {
-        long number = firstLong(value, key);
-        return number > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) number;
+    private static int firstInt(JSONObject value, String... keys) {
+        for (String key : keys) {
+            long number = firstLong(value, key);
+            if (number != 0L) {
+                return number > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) number;
+            }
+        }
+        return 0;
     }
 
     private static String canonicalQuery(Map<String, String> values) throws Exception {
