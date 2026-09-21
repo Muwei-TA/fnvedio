@@ -251,7 +251,7 @@ public class FnApiTest {
         assertEquals("", page.nextCursor);
     }
 
-    @Test public void catalogKindTvUsesObservedTvTypeAndFiltersSearchEpisodes() throws Exception {
+    @Test public void catalogKindTvUsesObservedTvTypeAndSearchKeepsEpisodeEntries() throws Exception {
         responses.put("/v/api/v1/item/list", "{\"code\":0,\"data\":{\"total\":2,\"list\":["
                 + "{\"guid\":\"series\",\"type\":\"TV\",\"title\":\"Show\"},"
                 + "{\"guid\":\"movie\",\"type\":\"Movie\",\"title\":\"Film\"}]}} ");
@@ -267,10 +267,18 @@ public class FnApiTest {
                 + "{\"guid\":\"episode\",\"type\":\"Episode\"},"
                 + "{\"guid\":\"series\",\"type\":\"TV\"}]}} ");
         MediaRepository.Page search = api.catalogPage(new MediaRepository.Query("show", ""), "");
-        assertEquals(2, search.items.size());
+        assertEquals(3, search.items.size());
         assertEquals("movie", search.items.get(0).id);
-        assertEquals("series", search.items.get(1).id);
+        assertEquals("episode", search.items.get(1).id);
+        assertEquals("series", search.items.get(2).id);
         assertEquals("q=show", rawQuery);
+    }
+
+    @Test public void catalogPageWithoutTotalKeepsPagingAfterAFullPage() throws Exception {
+        responses.put("/v/api/v1/item/list", catalogPageWithoutTotal(50));
+        MediaRepository.Page page = api.catalogPage(new MediaRepository.Query("", ""), "");
+        assertEquals(50, page.items.size());
+        assertEquals("2", page.nextCursor);
     }
 
     @Test public void seriesEpisodesWalksSeasonContainersAndPagesPastFiftyWithStableIds() throws Exception {
@@ -308,6 +316,32 @@ public class FnApiTest {
         } catch (FnApi.FnApiException error) {
             assertTrue(error.getMessage().contains("pagination"));
         }
+    }
+
+    @Test public void seriesEpisodesCountsStableIdsAcrossDuplicatePagesBeforeEnding() throws Exception {
+        String itemList = "/v/api/v1/item/list";
+        requestResponses.put(itemList + "|series-a|1", episodePage("series-a", 1, 50, 52));
+        requestResponses.put(itemList + "|series-a|2", episodePage("series-a", 50, 2, 52));
+        requestResponses.put(itemList + "|series-a|3", episodePage("series-a", 52, 1, 52));
+        MediaRepository.Video series = new MediaRepository.Video();
+        series.id = "series-a";
+        List<MediaRepository.Video> episodes = api.seriesEpisodes(series);
+        assertEquals(52, episodes.size());
+        assertEquals("series-a-ep-52", episodes.get(51).id);
+    }
+
+    @Test public void seriesEpisodesHonorsHasMoreEvenWhenTotalIsAlreadyReached() throws Exception {
+        String itemList = "/v/api/v1/item/list";
+        requestResponses.put(itemList + "|series-a|1", "{\"code\":0,\"data\":{"
+                + "\"total\":1,\"has_more\":true,\"list\":["
+                + "{\"guid\":\"ep-1\",\"type\":\"Episode\",\"episode\":1}]}} ");
+        requestResponses.put(itemList + "|series-a|2", "{\"code\":0,\"data\":{"
+                + "\"total\":1,\"has_more\":false,\"list\":[]}} ");
+        MediaRepository.Video series = new MediaRepository.Video();
+        series.id = "series-a";
+        List<MediaRepository.Video> episodes = api.seriesEpisodes(series);
+        assertEquals(1, episodes.size());
+        assertTrue(bodies.get(itemList).contains("\"page\":2"));
     }
 
     @Test public void containerCannotBeResolvedAsPlayback() throws Exception {
@@ -355,6 +389,17 @@ public class FnApiTest {
                     .append(",\"episode\":").append(episode)
                     .append(",\"series_guid\":\"series-a\",\"season_guid\":\"")
                     .append(seasonId).append("\"}");
+        }
+        return body.append("]}} ").toString();
+    }
+
+    private String catalogPageWithoutTotal(int count) {
+        StringBuilder body = new StringBuilder("{\"code\":0,\"data\":{\"list\":[");
+        for (int i = 1; i <= count; i++) {
+            if (i > 1) body.append(',');
+            body.append("{\"guid\":\"movie-").append(i)
+                    .append("\",\"type\":\"Movie\",\"title\":\"Film ")
+                    .append(i).append("\"}");
         }
         return body.append("]}} ").toString();
     }

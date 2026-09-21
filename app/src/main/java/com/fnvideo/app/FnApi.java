@@ -42,7 +42,9 @@ public final class FnApi implements MediaRepository {
     private static final String CLIENT_VERSION = "629";
     private static final String DEFAULT_USER_AGENT = "FnVideo/1.0 (Android)";
     private static final int PAGE_SIZE = 50;
-    private static final int MAX_EPISODE_PAGES = 10_000;
+    private static final int MAX_EPISODE_PAGES = 512;
+    private static final int MAX_EPISODE_CONTAINER_DEPTH = 16;
+    private static final int MAX_EPISODE_CONTAINERS = 2_048;
     private static final int MAX_COMPATIBLE_AUDIO_CHANNELS = 2;
     private static final int CONNECT_TIMEOUT_MS = 15_000;
     private static final int READ_TIMEOUT_MS = 30_000;
@@ -236,13 +238,14 @@ public final class FnApi implements MediaRepository {
         Query effective = query == null ? new Query("", "") : query;
         if (!effective.query.isEmpty()) {
             // Search is the only observed global search route. It has no
-            // verified cursor, so keep it as one catalog page and remove
-            // episode rows that the search route may include.
+            // verified cursor, so keep it as one page. A global search may
+            // return only an episode when no reliable parent mapping exists;
+            // retain that entry so the caller can expose it as a play target.
             Map<String, String> params = new LinkedHashMap<>();
             params.put("q", effective.query);
             Object data = requestData("GET", API_V1 + "/search/list", params, null);
-            List<Video> works = catalogWorks(parseVideos(listArray(data)), effective.kind);
-            return new Page(works, "");
+            List<Video> results = catalogSearchResults(parseVideos(listArray(data)), effective.kind);
+            return new Page(results, "");
         }
 
         int pageNumber = parsePage(cursor);
@@ -266,8 +269,7 @@ public final class FnApi implements MediaRepository {
             values = new JSONArray();
         }
         List<Video> works = catalogWorks(parseVideos(values), effective.kind);
-        int total = listing.optInt("total", values.length());
-        String next = total > pageNumber * PAGE_SIZE ? String.valueOf(pageNumber + 1) : "";
+        String next = catalogNextCursor(listing, values.length(), pageNumber);
         return new Page(works, next);
     }
 
@@ -299,9 +301,10 @@ public final class FnApi implements MediaRepository {
         if (seriesId.isEmpty() && !isSeasonContainer(series)) {
             seriesId = series.id;
         }
+        TraversalBudget budget = new TraversalBudget();
         collectEpisodeChildren(series.id, seriesId,
                 isSeasonContainer(series) ? series : null,
-                episodes, visitedContainers);
+                episodes, visitedContainers, 0, budget);
 
         List<Video> result = new ArrayList<>(episodes.values());
         result.sort(SERIES_ORDER);
@@ -315,9 +318,17 @@ public final class FnApi implements MediaRepository {
     private void collectEpisodeChildren(String parentId, String seriesId,
                                         Video seasonContainer,
                                         LinkedHashMap<String, Video> episodes,
-                                        java.util.Set<String> visitedContainers) throws Exception {
+                                        java.util.Set<String> visitedContainers,
+                                        int depth, TraversalBudget budget) throws Exception {
+        if (depth > MAX_EPISODE_CONTAINER_DEPTH) {
+            throw new FnApiException("NAS episode container nesting exceeds the safety limit");
+        }
         if (!visitedContainers.add(parentId)) {
             return;
+        }
+        budget.containers++;
+        if (budget.containers > MAX_EPISODE_CONTAINERS) {
+            throw new FnApiException("NAS episode catalog contains too many containers");
         }
         List<Video> children = readAllChildren(parentId);
         for (Video child : children) {
@@ -327,7 +338,7 @@ public final class FnApi implements MediaRepository {
                     childSeriesId = seriesId;
                 }
                 collectEpisodeChildren(child.id, childSeriesId, child,
-                        episodes, visitedContainers);
+                        episodes, visitedContainers, depth + 1, budget);
                 continue;
             }
             if (isContainer(child) || !isEpisodeLike(child, seasonContainer)) {
@@ -361,7 +372,6 @@ public final class FnApi implements MediaRepository {
     private List<Video> readAllChildren(String parentId) throws Exception {
         LinkedHashMap<String, Video> items = new LinkedHashMap<>();
         long expectedTotal = -1L;
-        int fetchedRows = 0;
         for (int pageNumber = 1; pageNumber <= MAX_EPISODE_PAGES; pageNumber++) {
             ItemPage page = fetchChildrenPage(parentId, pageNumber);
             if (page.totalPresent) {
@@ -372,7 +382,6 @@ public final class FnApi implements MediaRepository {
             }
 
             int rows = page.items.size();
-            fetchedRows += rows;
             int newItems = 0;
             for (Video item : page.items) {
                 if (items.putIfAbsent(item.id, item) == null) {
@@ -390,19 +399,23 @@ public final class FnApi implements MediaRepository {
                 if (page.hasMorePresent && page.hasMore) {
                     throw new FnApiException("NAS reported more episodes after an empty page");
                 }
-                if (expectedTotal >= 0L && fetchedRows < expectedTotal) {
+                if (expectedTotal >= 0L && items.size() < expectedTotal) {
                     throw new FnApiException("NAS episode pagination ended before the reported total");
                 }
                 return new ArrayList<>(items.values());
             }
 
             if (page.hasMorePresent && !page.hasMore) {
-                if (expectedTotal >= 0L && fetchedRows < expectedTotal) {
+                if (expectedTotal >= 0L && items.size() < expectedTotal) {
                     throw new FnApiException("NAS ended episode pagination before the reported total");
                 }
                 return new ArrayList<>(items.values());
             }
-            if (expectedTotal >= 0L && fetchedRows >= expectedTotal) {
+            // A duplicate row must not satisfy `total`: the service can count
+            // it again while the final stable ID is still on a later page.
+            // Also keep walking when has_more=true contradicts the total.
+            if (expectedTotal >= 0L && items.size() >= expectedTotal
+                    && (!page.hasMorePresent || !page.hasMore)) {
                 return new ArrayList<>(items.values());
             }
             if (!page.hasMorePresent && expectedTotal < 0L && rows < PAGE_SIZE) {
@@ -472,6 +485,10 @@ public final class FnApi implements MediaRepository {
         }
     }
 
+    private static final class TraversalBudget {
+        int containers;
+    }
+
     private static Boolean optionalBoolean(JSONObject object, String... keys) {
         for (String key : keys) {
             if (!object.has(key) || object.isNull(key)) {
@@ -530,6 +547,37 @@ public final class FnApi implements MediaRepository {
             }
         }
         return result;
+    }
+
+    private static List<Video> catalogSearchResults(List<Video> values, String kind) throws Exception {
+        String normalized = safe(kind).toLowerCase(java.util.Locale.US);
+        if (normalized.isEmpty() || "all".equals(normalized) || "*".equals(normalized)) {
+            return values;
+        }
+        return catalogWorks(values, kind);
+    }
+
+    private static String catalogNextCursor(JSONObject listing, int rowCount, int pageNumber)
+            throws FnApiException {
+        Object rawTotal = listing.opt("total");
+        if (rawTotal != null && rawTotal != JSONObject.NULL) {
+            long total;
+            try {
+                total = rawTotal instanceof Number
+                        ? ((Number) rawTotal).longValue()
+                        : Long.parseLong(String.valueOf(rawTotal));
+            } catch (NumberFormatException error) {
+                throw new FnApiException("NAS returned an invalid catalog total", 0, 0, error);
+            }
+            if (total < 0L) {
+                throw new FnApiException("NAS returned an invalid catalog total");
+            }
+            return total > pageNumber * PAGE_SIZE ? String.valueOf(pageNumber + 1) : "";
+        }
+        // Without a total, a full page is not evidence of the end. Expose the
+        // next page cursor and let the following short/empty page establish a
+        // clear boundary.
+        return rowCount >= PAGE_SIZE ? String.valueOf(pageNumber + 1) : "";
     }
 
     private static boolean isSeasonContainer(Video video) {
