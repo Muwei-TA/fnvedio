@@ -6,6 +6,7 @@ import android.os.Handler;
 import android.os.Looper;
 
 import java.io.InputStream;
+import java.net.URI;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.LinkedHashMap;
@@ -28,10 +29,27 @@ public final class PosterLoader {
     private static final int DEFAULT_MAX_HEIGHT = 1_200;
     private static final int CONNECT_TIMEOUT_MS = 8_000;
     private static final int READ_TIMEOUT_MS = 12_000;
+    private static final int MAX_REDIRECTS = 3;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Map<String, Bitmap> cache = new LinkedHashMap<>(16, 0.75f, true);
+    private final String serverOrigin;
+    private final String sessionToken;
+
+    /** Public compatibility constructor for callers that only load public URLs. */
+    public PosterLoader() {
+        this("", "");
+    }
+
+    /**
+     * Binds this loader to one session. Credentials are never accepted per
+     * request, so a recycled target cannot accidentally change their scope.
+     */
+    public PosterLoader(String serverOrigin, String sessionToken) {
+        this.serverOrigin = normalizeOrigin(serverOrigin);
+        this.sessionToken = sessionToken == null ? "" : sessionToken.trim();
+    }
 
     public void load(String url, Target target) {
         load(url, DEFAULT_MAX_WIDTH, DEFAULT_MAX_HEIGHT, target);
@@ -82,8 +100,8 @@ public final class PosterLoader {
         }
         HttpURLConnection connection = null;
         try {
-            connection = open(url);
-            if (connection.getResponseCode() / 100 != 2) {
+            connection = openFinal(url);
+            if (connection == null) {
                 return null;
             }
             try (InputStream input = connection.getInputStream()) {
@@ -100,8 +118,8 @@ public final class PosterLoader {
                 }
                 // Reopen because BitmapFactory consumed the first stream.
                 connection.disconnect();
-                connection = open(url);
-                if (connection.getResponseCode() / 100 != 2) {
+                connection = openFinal(url);
+                if (connection == null) {
                     return null;
                 }
                 try (InputStream second = connection.getInputStream()) {
@@ -120,12 +138,61 @@ public final class PosterLoader {
         }
     }
 
-    private static HttpURLConnection open(String url) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+    /** Opens one hop with auth only when this exact URL is the trusted origin. */
+    private HttpURLConnection open(String url) throws Exception {
+        URL target = new URL(url);
+        String protocol = target.getProtocol();
+        if (!"http".equalsIgnoreCase(protocol) && !"https".equalsIgnoreCase(protocol)) {
+            throw new IllegalArgumentException("Unsupported poster URL scheme");
+        }
+        HttpURLConnection connection = (HttpURLConnection) target.openConnection();
         connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
         connection.setReadTimeout(READ_TIMEOUT_MS);
-        connection.setInstanceFollowRedirects(true);
+        connection.setInstanceFollowRedirects(false);
+        if (!sessionToken.isEmpty() && !serverOrigin.isEmpty()
+                && ServerAddress.sameOrigin(serverOrigin, url)) {
+            connection.setRequestProperty("Authorization", sessionToken);
+        }
         return connection;
+    }
+
+    /** Follows a small public redirect chain, re-evaluating auth on each hop. */
+    private HttpURLConnection openFinal(String initialUrl) throws Exception {
+        String current = initialUrl;
+        for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+            HttpURLConnection connection = open(current);
+            int status = connection.getResponseCode();
+            if (status / 100 == 2) return connection;
+            if (!isRedirect(status)) {
+                connection.disconnect();
+                return null;
+            }
+            String location = connection.getHeaderField("Location");
+            connection.disconnect();
+            if (location == null || location.trim().isEmpty()) return null;
+            URI base = new URI(current);
+            URI resolved = base.resolve(location.trim());
+            String next = resolved.toString();
+            if (!next.startsWith("http://") && !next.startsWith("https://")) return null;
+            current = next;
+        }
+        return null;
+    }
+
+    private static boolean isRedirect(int status) {
+        return status == HttpURLConnection.HTTP_MOVED_PERM
+                || status == HttpURLConnection.HTTP_MOVED_TEMP
+                || status == HttpURLConnection.HTTP_SEE_OTHER
+                || status == 307 || status == 308;
+    }
+
+    private static String normalizeOrigin(String value) {
+        if (value == null || value.trim().isEmpty()) return "";
+        try {
+            return ServerAddress.normalize(value);
+        } catch (IllegalArgumentException invalid) {
+            return "";
+        }
     }
 
     public void shutdown() {

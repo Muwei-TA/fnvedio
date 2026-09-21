@@ -111,8 +111,8 @@ public final class LibraryActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         configureWindow();
-        posterLoader = new PosterLoader();
         restoreSession();
+        posterLoader = createPosterLoader();
         buildShell();
         if (hasSession()) {
             initStore();
@@ -994,6 +994,7 @@ public final class LibraryActivity extends Activity {
             accountId = account;
             legacyIdentity = account.isEmpty();
             repository = new FnApi(serverBase, sessionToken);
+            replacePosterLoader();
             initStore();
             resetWatchQueue();
             currentQuery = "";
@@ -1014,6 +1015,7 @@ public final class LibraryActivity extends Activity {
         legacyIdentity = false;
         repository = null;
         watchStore = null;
+        replacePosterLoader();
         resetWatchQueue();
         showSignedOut();
     }
@@ -1041,6 +1043,15 @@ public final class LibraryActivity extends Activity {
                 watchStore = null;
             }
         }
+    }
+
+    private PosterLoader createPosterLoader() {
+        return hasSession() ? new PosterLoader(serverBase, sessionToken) : new PosterLoader();
+    }
+
+    private void replacePosterLoader() {
+        if (posterLoader != null) posterLoader.shutdown();
+        posterLoader = createPosterLoader();
     }
 
     private boolean hasSession() {

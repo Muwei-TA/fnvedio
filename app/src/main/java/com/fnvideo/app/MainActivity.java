@@ -129,6 +129,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         // thread, so a slow catalogue walk cannot delay explicit playback.
         networkExecutor = Executors.newFixedThreadPool(2);
         restoreSession();
+        posterLoader = createPosterLoader();
         repository = hasSession() ? new FnApi(serverBase, sessionToken) : null;
         if (hasSession()) {
             try {
@@ -207,7 +208,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             return insets;
         });
 
-        adapter = new FeedAdapter(this, this, posterLoader = new PosterLoader());
+        adapter = new FeedAdapter(this, this, posterLoader);
         adapter.setVerticalSwipeEnabled("watch".equalsIgnoreCase(mode));
         adapter.setVideos(currentVideo == null
                 ? Collections.emptyList() : Collections.singletonList(currentVideo));
@@ -971,6 +972,10 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
 
     private boolean hasSession() {
         return !serverBase.isEmpty() && !sessionToken.isEmpty();
+    }
+
+    private PosterLoader createPosterLoader() {
+        return hasSession() ? new PosterLoader(serverBase, sessionToken) : new PosterLoader();
     }
 
     private void returnToLibrary() {
