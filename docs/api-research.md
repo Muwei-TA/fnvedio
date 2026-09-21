@@ -4,11 +4,11 @@ The Android adapter in [`FnApi.java`](../app/src/main/java/com/fnvideo/app/FnApi
 
 ## Authentication and request signing
 
-The web bundle stores the login result token in the `Trim-MC-token` cookie and sends that value as the raw `Authorization` header. It does not prepend `Bearer`.
+The Android client now logs in through the native `LoginActivity` form and `FnApi.LoginCall`; it does not embed the web login in a WebView or read a `CookieManager` cookie. The form sends the entered username and a SHA-256 password digest to `/api/v2/user/loginByPassword` with `app_name=trimemedia-web`. The returned raw token is handed back to `MainActivity`, then encrypted by `SessionStore` and passed to `new FnApi(serverBase, token)` for API requests. The password and digest are transient; the adapter accepts them only for the login call and does not retain them.
 
-Evidence: `research/assets/14a77ac952fc83b785b65592c335e16d-DmSmAgAZ.js`, around offsets `191 835` and `197 763`.
+The web bundle remains the evidence for the media API's raw `Authorization` convention: when a session token is available, `FnApi` sends it without a `Bearer` prefix.
 
-The WebView login flow should therefore read the cookie with Android `CookieManager` after the official login completes, then pass the raw value to `new FnApi(serverBase, token)`. The native adapter does not accept or store a username or password.
+Evidence for the web request convention: `research/assets/14a77ac952fc83b785b65592c335e16d-DmSmAgAZ.js`, around offsets `191 835` and `197 763`. The native login path is implemented in [`LoginActivity.java`](../app/src/main/java/com/fnvideo/app/LoginActivity.java) and [`FnApi.java`](../app/src/main/java/com/fnvideo/app/FnApi.java).
 
 The API client signs requests with an `authx` header (the value is a query-string-shaped nonce/timestamp/sign tuple):
 
@@ -30,11 +30,16 @@ All routes below are under `/v/api/v1`.
 | --- | --- | --- | --- |
 | `libraries()` | `GET /mdb/list` | no body | `data` array; each library uses `guid` and `title`/`name` |
 | `page(query, cursor)` | `POST /item/list` | `ancestor_guid`, `tags.type = ["Movie", "Video", "Episode"]`, `sort_type`, `sort_column`, `exclude_grouped_video`, `page`, `page_size = 50` | `data.list`, `data.total` |
-| search page | `GET /search/list?q=...` | signed `q` query | array or `data.list`; the observed route has no page cursor |
+| `catalogPage(query, cursor)` | `POST /item/list` | `ancestor_guid`, `tags.type = ["Movie", "TV", "Video"]` for an all-kind catalog, or one observed work type for `Query.kind`; same sort and page fields | `data.list`, `data.total` when present; ordinary catalog rows exclude `Episode` |
+| feed/search page | `GET /search/list?q=...` | signed `q` query | array or `data.list`; the observed route has no page cursor |
 
 The web list screen sends `ancestor_guid` or `parent_guid`, `tags`, `sort_type`, `sort_column`, `exclude_grouped_video`, `page`, and `page_size`. Evidence: `research/assets/dba38fcc7e14373d7386c091144609ff-BS08UET6.js`, around offsets `4 026` and `17 421`.
 
-FeedPolicy owns eligibility; the adapter maps Query.mediaTypes into NAS tags and FeedState filters containers. The v1 app feed deliberately asks for movies, ordinary videos, and directly playable episodes and drops `Directory`, `TV`, and `Season` containers before they reach the player. That prevents a TV/library container from being treated as a playable item; series navigation is outside this bounded adapter contract.
+`page(Query, cursor)` preserves the Feed contract: `Query.mediaTypes` maps to `Movie`, `Video`, and `Episode`, and FeedState keeps only playable rows. `catalogPage(Query, cursor)` is a separate work catalog contract: an empty `Query.kind` asks for the observed `Movie`, `TV`, and `Video` work types; `movie`, `tv`/`series`, and `video` narrow that set. Ordinary catalog pages exclude `Episode` so a series is represented by its TV work row rather than one poster per episode. When the catalog list omits `total`, a full 50-row response yields another cursor and only a short or empty page establishes the boundary. A search with an all-kind query is the documented exception: because the observed search route does not provide a reliable parent mapping, an Episode-only hit remains in the one-page result as a possible episode entry. A kind-specific search still filters to that kind.
+
+`seriesEpisodes(Video)` reuses `POST /item/list` with `parent_guid`, ascending `episode` order, and `page/page_size=50`. It accepts either direct Episode children or Season containers; Season containers are queried again with the same observed route. Pages continue until a trustworthy `total`, `has_more`, or short/empty page boundary is reached, and rows are deduplicated by stable item id. A repeated page, contradictory pagination metadata, missing stable id, or reported total that cannot be reached produces an explicit adapter failure. The traversal has a 512-page-per-container, 16-level, and 2,048-container safety budget. TV and Season containers are never passed to `resolve()`.
+
+`Video` also carries the observed list metadata needed by the catalog (`overview`, string `year`, `seriesId`, and `seasonId`). There is no separately verified item-details route in this adapter; `MediaRepository.details(Video)` therefore defaults to returning the already-read model rather than inventing `/item/info` or another endpoint.
 
 Poster paths follow the web helper: relative values are prefixed with `/v/api/v1/sys/img` and receive `?w=400`; absolute URLs are preserved. Evidence: `research/assets/74c95604043427f0bee1d0e16bfa53af-Cc0bUiN5.js`, around offset `352 438`.
 
@@ -81,6 +86,8 @@ The returned `MediaRepository.Source` is atomic: URL, headers, and inferred MIME
 
 ## Validation and limits
 
-Public probes confirmed that unsigned or incorrectly signed API calls are rejected, while `/v/api/v1/sys/version` is public. A logged-in browser session successfully played a normal movie, but its cookie value was not extracted or retained. Subsequent NAS Android testing with the user-authenticated app verified live library requests, stream resolution, and rendered playback. The container required H.264/AAC fallback for HEVC Main10. HLS uses the original play_link and Media3 MIME application/x-mpegURL, without the media/range wrapper.
+Earlier baseline probes confirmed that unsigned or incorrectly signed API calls are rejected, while `/v/api/v1/sys/version` is public. A logged-in browser session successfully played a normal movie, but its cookie value was not extracted or retained. Earlier NAS Android testing with the user-authenticated app verified live library requests, stream resolution, and rendered playback. The container required H.264/AAC fallback for HEVC Main10. HLS uses the original play_link and Media3 MIME application/x-mpegURL, without the media/range wrapper.
 
-When a remote stream response omits the fields required to construct the observed `play.play` request, `FnApi` fails with a credential-free diagnostic instead of inventing a transcoding protocol. Search results are returned as one page because the observed `/search/list` route did not expose pagination. Direct-link quality selection uses the first server-provided quality; a future quality selector can make that choice explicit without changing the request contract.
+When a remote stream response omits the fields required to construct the observed `play.play` request, `FnApi` fails with a credential-free diagnostic instead of inventing a transcoding protocol. Search results are returned as one page because the observed `/search/list` route does not expose pagination; all-kind search retains an unmerged Episode hit as described above. Direct-link quality selection uses the first server-provided quality; a future quality selector can make that choice explicit without changing the request contract.
+
+The catalog and Season traversal behavior in this revision is covered by synthetic JVM contract tests. This revision has not been verified against a real multi-season NAS library, so the exact server hierarchy and long-list behavior remain an integration acceptance item.

@@ -16,9 +16,9 @@
 
 ## 2. 已知事实与未决风险
 
-服务地址由用户在登录页配置，入口通常为 `/v`；官方网页登录后可读取媒体目录。用户选择默认完整显示。
+服务地址由用户在原生登录页配置，入口通常为 `/v`；`LoginActivity` 通过 `FnApi.LoginCall` 完成密码登录，成功后由 `SessionStore` 保存加密会话。用户选择默认完整显示。
 
-待验证：接口鉴权与签名、分页字段、媒体项到可播放文件的映射、电视剧分集、播放地址是否有短时效签名、转码会话的创建与释放、Android 解码兼容性。接口依据部署实例的前端请求代码核对，不把猜测的接口当成稳定契约。
+待验证：部署实例的鉴权与签名兼容性、媒体项到可播放文件的映射、真实多季电视剧分集层级、播放地址是否有短时效签名、转码会话的创建与释放、Android 解码兼容性。目录适配已经按已观察的 `/item/list` 与 `/search/list` 编写，但本轮没有把合成测试当成真实多季 NAS 验证；未知接口不扩散到 UI。
 
 ## 3. 技术方案与取舍
 
@@ -41,7 +41,7 @@ flowchart TD
 ```
 
 - **Feed 状态**：当前查询、媒体库、条目、分页游标、当前项、请求代数；决定“哪条是当前项”，不认识飞牛 JSON 字段。
-- **FeedPolicy**：可播放类型（电影、普通视频、分集）的唯一规则来源；Query 引用规则，FeedState 执行目录项过滤。飞牛适配器只将查询条件映射为服务参数。
+- **FeedPolicy**：Feed 可播放类型（电影、普通视频、分集）的唯一规则来源；`page(Query, cursor)` 继续使用这组类型，FeedState 执行目录项过滤。片库使用同一仓库的独立 `catalogPage(Query, cursor)`，按 `Query.kind` 请求作品类型（`Movie`、`TV`、`Video`），普通目录不混入 `Episode`。
 - **飞牛适配器**：隐藏鉴权、签名、响应结构、分页及“媒体详情 → 文件 → 播放地址”的复杂性；向内返回简单模型。
 - **播放控制**：唯一播放器实例，绑定当前页，处理暂停、seek、缩放、错误和资源释放；不自行查询片库。
 - **会话存储**：加密保存令牌，保留服务器地址；不保存密码，不写入 Git、日志或 APK。退出清理令牌。
@@ -51,18 +51,25 @@ flowchart TD
 
 ## 5. 核心契约
 
-设计契约（字段以真实接口验证结果适配，不要求服务器使用这些名称）：
+应用内契约（字段以真实接口验证结果适配，不要求服务器使用这些名称）：
 
 ```text
 MediaRepository.libraries() -> List<Library>
 MediaRepository.page(Query, cursor) -> Page(items, nextCursor)
+MediaRepository.catalogPage(Query, cursor) -> Page(workItems, nextCursor)
+MediaRepository.details(Video) -> Video       // defaults to the loaded model
+MediaRepository.seriesEpisodes(Video) -> List<Video>
 MediaRepository.resolve(Video) -> Source(url, headers, mimeType)
 ResumeStore.read(MediaId) -> positionMillis
 ResumeStore.write(MediaId, positionMillis)
 SessionStore -> serverOrigin + encryptedToken
 ```
 
-`MediaItem` 包含稳定 ID、标题、副标题、封面和媒体类型。分集展开规则必须明确：一个 Feed 项应对应可播放文件；系列目录不能直接当视频交给播放器。
+`Video` 包含稳定 ID、标题、副标题、封面、媒体类型，以及目录读取的 `overview`、字符串 `year`、`seriesId` 和 `seasonId`。`details(Video)` 不假定一个未核实的详情 HTTP 路由，默认返回已经从目录响应读到的模型。分集展开规则必须明确：一个 Feed 项应对应可播放文件；系列和 Season 目录不能直接当视频交给播放器。
+
+Feed 与片库的边界如下：Feed 的 `page()` 面向可播放队列，保留 `Movie`、`Video`、`Episode` 语义；片库的 `catalogPage()` 面向作品地图，空 `kind` 返回 `Movie`、`TV`、`Video`，按 kind 可缩小到其中一种。搜索仍复用已观察的 `/search/list`，没有分页游标；all-kind 搜索保留无法可靠归并到系列的 Episode 命中，普通目录列表则排除 Episode。UI 与本地存储尚未因这份 API 契约自动获得新的页面或观看记录行为，本轮只记录已实现的适配边界。
+
+`seriesEpisodes()` 先用 `parent_guid` 读取系列或 Season 的子项；遇到 Season 容器就继续读取该容器，按稳定 ID 去重并按季／集排序。只有收到可靠的总数、`has_more` 或短／空页边界才结束；重复页、冲突元数据、缺稳定 ID 和无法达到总数都返回明确失败。每个容器最多 512 页，遍历最多 16 层、2,048 个容器，避免失控递归或无界请求。真实 NAS 的多季层级和超过 50 条目录仍需集成验收。
 
 `Source` 同时返回 URL 和请求头，避免读取“最近一次解析留下的请求头”造成并发串片。临时播放 URL 不持久化，每次重新激活视频时解析。错误区分登录失效、不可达、无权限、无文件、格式不支持和服务异常，UI 给出对应动作。
 
