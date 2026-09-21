@@ -1,6 +1,7 @@
 package com.fnvideo.app;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -10,6 +11,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.SeekBar;
@@ -65,10 +67,17 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
     private static final int SURFACE = Color.argb(190, 20, 23, 30);
 
     private final Listener listener;
+    private final PosterLoader posterLoader;
     private List<MediaRepository.Video> videos = Collections.emptyList();
 
     public FeedAdapter(@NonNull Context context, @NonNull Listener listener) {
+        this(context, listener, null);
+    }
+
+    public FeedAdapter(@NonNull Context context, @NonNull Listener listener,
+                       PosterLoader posterLoader) {
         this.listener = listener;
+        this.posterLoader = posterLoader;
     }
 
     public void setVideos(List<MediaRepository.Video> values) {
@@ -149,6 +158,15 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         playerView.setBackgroundColor(Color.BLACK);
         playerView.setClickable(true);
         page.addView(playerView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
+        ImageView poster = new ImageView(pageContext);
+        poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        poster.setBackgroundColor(Color.BLACK);
+        poster.setVisibility(View.GONE);
+        poster.setClickable(false);
+        page.addView(poster, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -274,7 +292,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         speedParams.topMargin = dp(pageContext, 120);
         page.addView(speedIndicator, speedParams);
 
-        VideoViewHolder holder = new VideoViewHolder(page, playerView, title, subtitle, time,
+        VideoViewHolder holder = new VideoViewHolder(page, playerView, poster, title, subtitle, time,
                 seekBar, fit, loading, playIndicator, errorPanel, errorDetail, retry,
                 speedIndicator, episodesButton);
         GestureDetector pageGestures = new GestureDetector(pageContext,
@@ -407,6 +425,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
 
     public final class VideoViewHolder extends RecyclerView.ViewHolder {
         public final PlayerView playerView;
+        public final ImageView posterView;
         private final TextView titleView;
         private final TextView subtitleView;
         private final TextView timeView;
@@ -423,8 +442,11 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         private boolean seeking;
         private boolean horizontalSeekActive;
         private boolean speedPressed;
+        private int posterBindGeneration;
+        private boolean holderReady;
 
-        private VideoViewHolder(FrameLayout page, PlayerView playerView, TextView titleView,
+        private VideoViewHolder(FrameLayout page, PlayerView playerView, ImageView posterView,
+                                TextView titleView,
                                 TextView subtitleView, TextView timeView, SeekBar seekBar,
                                 TextView fitButton, ProgressBar loading, TextView playIndicator,
                                 LinearLayout errorPanel, TextView errorDetail,
@@ -432,6 +454,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
                                 TextView episodesButton) {
             super(page);
             this.playerView = playerView;
+            this.posterView = posterView;
             this.titleView = titleView;
             this.subtitleView = subtitleView;
             this.timeView = timeView;
@@ -446,8 +469,23 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
             this.episodesButton = episodesButton;
         }
 
-        private void bind(MediaRepository.Video value) {
+        void bind(MediaRepository.Video value) {
             video = value;
+            posterBindGeneration++;
+            final int generation = posterBindGeneration;
+            String posterUrl = value == null ? "" : safe(value.poster);
+            posterView.setImageDrawable(null);
+            posterView.setVisibility(View.GONE);
+            if (!posterUrl.isEmpty() && posterLoader != null) {
+                posterLoader.load(posterUrl, bitmap -> {
+                    if (posterBindGeneration == generation) {
+                        posterView.setImageBitmap(bitmap);
+                        if (!holderReady) {
+                            posterView.setVisibility(View.VISIBLE);
+                        }
+                    }
+                });
+            }
             String title = value == null ? "" : safe(value.title);
             if (title.isEmpty() && value != null) {
                 title = safe(value.id);
@@ -503,6 +541,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         }
 
         public void showLoading() {
+            holderReady = false;
             loading.setVisibility(View.VISIBLE);
             errorPanel.setVisibility(View.GONE);
             playIndicator.setVisibility(View.GONE);
@@ -515,11 +554,14 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         }
 
         public void showReady() {
+            holderReady = true;
             loading.setVisibility(View.GONE);
             errorPanel.setVisibility(View.GONE);
+            posterView.setVisibility(View.GONE);
         }
 
         public void showError(String detail) {
+            holderReady = false;
             loading.setVisibility(View.GONE);
             playIndicator.setVisibility(View.GONE);
             errorDetail.setText(detail == null || detail.trim().isEmpty()
@@ -559,6 +601,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         }
 
         private void resetStatus() {
+            holderReady = false;
             loading.setVisibility(View.GONE);
             errorPanel.setVisibility(View.GONE);
             playIndicator.setVisibility(View.GONE);

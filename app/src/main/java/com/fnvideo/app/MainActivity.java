@@ -78,6 +78,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private FrameLayout root;
     private ViewPager2 pager;
     private FeedAdapter adapter;
+    private PosterLoader posterLoader;
     private FrameLayout messageOverlay;
     private ProgressBar messageSpinner;
     private TextView messageTitle;
@@ -117,6 +118,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         resumePreferences = getSharedPreferences("resume_positions", MODE_PRIVATE);
         restoreSession();
         refreshRepository();
+        posterLoader = new PosterLoader();
         buildUi();
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
         player = new ExoPlayer.Builder(this)
@@ -154,7 +156,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
             return insets;
         });
 
-        adapter = new FeedAdapter(this, this);
+        adapter = new FeedAdapter(this, this, posterLoader);
         pager = new ViewPager2(this);
         pager.setOrientation(ViewPager2.ORIENTATION_VERTICAL);
         pager.setUserInputEnabled(true);
@@ -1552,6 +1554,9 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         mainHandler.removeCallbacksAndMessages(null);
         if (networkExecutor != null) {
             networkExecutor.shutdownNow();
+        }
+        if (posterLoader != null) {
+            posterLoader.shutdown();
         }
         if (player != null) {
             player.release();
