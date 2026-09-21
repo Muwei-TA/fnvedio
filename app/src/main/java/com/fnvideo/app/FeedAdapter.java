@@ -10,6 +10,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewConfiguration;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -297,10 +298,13 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
                 speedIndicator, episodesButton);
         GestureDetector pageGestures = new GestureDetector(pageContext,
                 new GestureDetector.SimpleOnGestureListener() {
-                    private static final float SWIPE_THRESHOLD_PX = 24f;
+                    private final float swipeThreshold = Math.max(dp(pageContext, 24),
+                            ViewConfiguration.get(pageContext).getScaledTouchSlop());
+                    private boolean verticalDrag;
 
                     @Override
                     public boolean onDown(MotionEvent event) {
+                        verticalDrag = false;
                         return true;
                     }
 
@@ -309,23 +313,30 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
                                             float distanceX, float distanceY) {
                         float totalX = current.getX() - begin.getX();
                         float totalY = current.getY() - begin.getY();
-                        if (Math.abs(totalX) > SWIPE_THRESHOLD_PX
-                                && Math.abs(totalX) > Math.abs(totalY)) {
-                            if (!holder.isHorizontalSeekActive()) {
-                                holder.markHorizontalSeekActive(true);
-                                listener.onHorizontalSeekStart(holder);
-                            }
-                            listener.onHorizontalSeek(holder, totalX);
-                        } else if (!holder.isHorizontalSeekActive()) {
-                            // Vertical drags keep the pager's page swipes.
-                            holder.markHorizontalSeekActive(false);
+                        if (holder.isSpeedPressed() || verticalDrag) {
+                            return true;
                         }
+                        if (!holder.isHorizontalSeekActive()) {
+                            if (Math.max(Math.abs(totalX), Math.abs(totalY)) <= swipeThreshold) {
+                                return true;
+                            }
+                            if (Math.abs(totalY) >= Math.abs(totalX)) {
+                                verticalDrag = true;
+                                return true;
+                            }
+                            holder.markHorizontalSeekActive(true);
+                            if (holder.itemView.getParent() != null) {
+                                holder.itemView.getParent().requestDisallowInterceptTouchEvent(true);
+                            }
+                            listener.onHorizontalSeekStart(holder);
+                        }
+                        listener.onHorizontalSeek(holder, totalX);
                         return true;
                     }
 
                     @Override
-                    public boolean onSingleTapConfirmed(MotionEvent event) {
-                        listener.onPageTapped(holder);
+                    public boolean onSingleTapUp(MotionEvent event) {
+                        holder.playerView.performClick();
                         return true;
                     }
 
@@ -350,7 +361,10 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
                     listener.onSpeedPressEnd(holder);
                 }
             }
-            return pageGestures.onTouchEvent(event);
+            pageGestures.onTouchEvent(event);
+            // Own the full stream: GestureDetector may return false for UP/CANCEL.
+            // Falling through would let PlayerView dispatch an extra click.
+            return true;
         };
         playerView.setOnTouchListener(pageTouch);
         page.setOnTouchListener(pageTouch);

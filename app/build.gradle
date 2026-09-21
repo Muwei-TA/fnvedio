@@ -11,8 +11,8 @@ android {
         applicationId 'com.fnvideo.app'
         minSdk 26
         targetSdk 35
-        versionCode 4
-        versionName '1.1.1-test.1'
+        versionCode 5
+        versionName '1.1.1-test.2'
         testInstrumentationRunner 'android.test.InstrumentationTestRunner'
     }
 
@@ -21,6 +21,10 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
+    }
+
+    testOptions {
+        unitTests.includeAndroidResources = true
     }
 
     compileOptions {
@@ -42,6 +46,7 @@ dependencies {
     implementation 'androidx.media3:media3-ui:1.5.1'
 
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
     androidTestImplementation 'junit:junit:4.13.2'
     testImplementation 'org.json:json:20240303'
     testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
