@@ -15,6 +15,7 @@ import javax.crypto.spec.GCMParameterSpec;
 /** Auth stays on this device; Android Keystore key is never exported. */
 public final class SessionStore {
     private static final String ALIAS = "fnvideo.session.v1";
+    private static final String ACCOUNT_KEY = "account_id";
 
     private SessionStore() { }
 
@@ -24,6 +25,30 @@ public final class SessionStore {
 
     public static String base(Context context) {
         return prefs(context).getString("base", "http://nas.example.test:5666");
+    }
+
+    /**
+     * Returns the stable login identity used for local watch-state isolation.
+     * This is deliberately the username, never the encrypted session token.
+     * An empty result means an old session has no known account and the UI
+     * must request a fresh login before opening account-scoped watch state.
+     */
+    public static String accountId(Context context) {
+        try {
+            String value = prefs(context).getString(ACCOUNT_KEY, "");
+            return value == null ? "" : value.trim();
+        } catch (ClassCastException invalidValue) {
+            return "";
+        }
+    }
+
+    /** Remembers a username without persisting a password or authentication token. */
+    public static void rememberAccountId(Context context, String accountId) {
+        String value = accountId == null ? "" : accountId.trim();
+        SharedPreferences.Editor editor = prefs(context).edit();
+        if (value.isEmpty()) editor.remove(ACCOUNT_KEY);
+        else editor.putString(ACCOUNT_KEY, value);
+        editor.apply();
     }
 
     private static SecretKey key() throws Exception {
@@ -40,12 +65,25 @@ public final class SessionStore {
         return (SecretKey) store.getKey(ALIAS, null);
     }
 
-    /** Only the login result supplies a new token. Validate before changing stored state. */
+    /**
+     * Compatibility overload for non-login callers. It clears any stale
+     * identity; login callers must use the four-argument overload so a new
+     * token and username are committed together.
+     */
     public static void save(Context context, String base, String token) {
+        save(context, base, token, "");
+    }
+
+    /** Saves a token and its stable username identity in one preference update. */
+    public static void save(Context context, String base, String token, String accountId) {
         String origin = ServerAddress.normalize(base);
         if (token == null) throw new IllegalArgumentException("Missing session token");
+        String identity = accountId == null ? "" : accountId.trim();
         if (token.isEmpty()) {
-            prefs(context).edit().putString("base", origin).remove("token").remove("iv").apply();
+            SharedPreferences.Editor editor = prefs(context).edit()
+                    .putString("base", origin).remove("token").remove("iv")
+                    .remove(ACCOUNT_KEY);
+            editor.apply();
             return;
         }
         try {
@@ -53,8 +91,12 @@ public final class SessionStore {
             cipher.init(Cipher.ENCRYPT_MODE, key());
             String encrypted = Base64.encodeToString(
                     cipher.doFinal(token.getBytes(StandardCharsets.UTF_8)), Base64.NO_WRAP);
-            prefs(context).edit().putString("base", origin).putString("token", encrypted)
-                    .putString("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP)).apply();
+            SharedPreferences.Editor editor = prefs(context).edit()
+                    .putString("base", origin).putString("token", encrypted)
+                    .putString("iv", Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP));
+            if (identity.isEmpty()) editor.remove(ACCOUNT_KEY);
+            else editor.putString(ACCOUNT_KEY, identity);
+            editor.apply();
         } catch (Exception error) {
             throw new IllegalStateException("无法安全保存登录，请重试", error);
         }
@@ -64,7 +106,8 @@ public final class SessionStore {
     public static String changeServer(Context context, String requestedBase) {
         String origin = ServerAddress.normalize(requestedBase);
         String retained = ServerAddress.retainedToken(base(context), origin, token(context));
-        save(context, origin, retained);
+        save(context, origin, retained, ServerAddress.sameOrigin(base(context), origin)
+                ? accountId(context) : "");
         return retained;
     }
 
@@ -83,11 +126,12 @@ public final class SessionStore {
     }
 
     public static void clear(Context context) {
-        prefs(context).edit().remove("token").remove("iv").apply();
+        prefs(context).edit().remove("token").remove("iv").remove(ACCOUNT_KEY).apply();
     }
 
     /** Recover from an invalid legacy address instead of crashing on every launch. */
     public static void reset(Context context) {
-        prefs(context).edit().remove("base").remove("token").remove("iv").apply();
+        prefs(context).edit().remove("base").remove("token").remove("iv")
+                .remove(ACCOUNT_KEY).apply();
     }
 }

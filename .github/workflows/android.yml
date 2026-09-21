@@ -8,6 +8,7 @@ on:
     branches:
       - main
       - 'fix/**'
+      - 'codex/product-integration'
 
 permissions:
   contents: write
@@ -69,7 +70,7 @@ jobs:
           FNVIDEO_REQUIRE_SIGNING: ${{ github.event_name == 'push' }}
           FNVIDEO_SIGNING_STORE: ${{ github.event_name == 'push' && format('{0}/fnvideo-signing.p12', runner.temp) || '' }}
           FNVIDEO_SIGNING_PASSWORD: ${{ github.event_name == 'push' && secrets.ANDROID_SIGNING_PASSWORD || '' }}
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleDebug assembleDebugAndroidTest
 
       - name: Verify persistent APK signature
         if: github.event_name == 'push'
@@ -112,6 +113,14 @@ jobs:
         with:
           name: fnvideo-debug-apk-${{ github.sha }}
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload device test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: fnvideo-device-tests-${{ github.sha }}
+          path: app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           if-no-files-found: error
           retention-days: 14
 

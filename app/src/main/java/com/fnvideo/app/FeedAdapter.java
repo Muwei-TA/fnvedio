@@ -59,6 +59,9 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         void onSpeedPressEnd(VideoViewHolder holder);
 
         void onEpisodesBrowse(VideoViewHolder holder);
+
+        /** Enabled only for the explicit 随看 queue; the legacy feed keeps vertical drags inert. */
+        void onVerticalSwipe(VideoViewHolder holder, float deltaY);
     }
 
     private static final int BACKGROUND = Color.rgb(8, 10, 14);
@@ -70,6 +73,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
     private final Listener listener;
     private final PosterLoader posterLoader;
     private List<MediaRepository.Video> videos = Collections.emptyList();
+    private boolean verticalSwipeEnabled;
 
     public FeedAdapter(@NonNull Context context, @NonNull Listener listener) {
         this(context, listener, null);
@@ -117,6 +121,10 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
 
     public List<MediaRepository.Video> getVideos() {
         return videos;
+    }
+
+    public void setVerticalSwipeEnabled(boolean enabled) {
+        verticalSwipeEnabled = enabled;
     }
 
     public MediaRepository.Video getVideo(int position) {
@@ -305,18 +313,20 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         speedParams.topMargin = dp(pageContext, 120);
         page.addView(speedIndicator, speedParams);
 
-        VideoViewHolder holder = new VideoViewHolder(page, playerView, poster, title, subtitle, time,
-                seekBar, fit, loading, playIndicator, errorPanel, errorDetail, retry,
-                speedIndicator, episodesButton, seekPreview);
+        VideoViewHolder holder = new VideoViewHolder(page, playerView, poster, bottomShade,
+                bottomInfo, title, subtitle, time, seekBar, fit, loading, playIndicator,
+                errorPanel, errorDetail, retry, speedIndicator, episodesButton, seekPreview);
         GestureDetector pageGestures = new GestureDetector(pageContext,
                 new GestureDetector.SimpleOnGestureListener() {
                     private final float swipeThreshold = Math.max(dp(pageContext, 24),
                             ViewConfiguration.get(pageContext).getScaledTouchSlop());
                     private boolean verticalDrag;
+                    private boolean verticalSwipeDispatched;
 
                     @Override
                     public boolean onDown(MotionEvent event) {
                         verticalDrag = false;
+                        verticalSwipeDispatched = false;
                         return true;
                     }
 
@@ -334,6 +344,10 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
                             }
                             if (Math.abs(totalY) >= Math.abs(totalX)) {
                                 verticalDrag = true;
+                                if (verticalSwipeEnabled && !verticalSwipeDispatched) {
+                                    verticalSwipeDispatched = true;
+                                    listener.onVerticalSwipe(holder, totalY);
+                                }
                                 return true;
                             }
                             holder.markHorizontalSeekActive(true);
@@ -457,6 +471,8 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         public final ImageView posterView;
         private final TextView titleView;
         private final TextView subtitleView;
+        private final View bottomShade;
+        private final View bottomInfo;
         private final TextView timeView;
         private final SeekBar seekBar;
         private final TextView fitButton;
@@ -477,7 +493,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
         private boolean holderReady;
 
         private VideoViewHolder(FrameLayout page, PlayerView playerView, ImageView posterView,
-                                TextView titleView,
+                                View bottomShade, View bottomInfo, TextView titleView,
                                 TextView subtitleView, TextView timeView, SeekBar seekBar,
                                 TextView fitButton, ProgressBar loading, TextView playIndicator,
                                 LinearLayout errorPanel, TextView errorDetail,
@@ -486,6 +502,8 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
             super(page);
             this.playerView = playerView;
             this.posterView = posterView;
+            this.bottomShade = bottomShade;
+            this.bottomInfo = bottomInfo;
             this.titleView = titleView;
             this.subtitleView = subtitleView;
             this.timeView = timeView;
@@ -614,6 +632,19 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
             updatePlayIndicator();
         }
 
+        /** PlayerActivity uses this for the 2.8s immersive control timeout. */
+        public void setControlsVisible(boolean visible) {
+            bottomShade.setVisibility(visible ? View.VISIBLE : View.GONE);
+            bottomInfo.setVisibility(visible ? View.VISIBLE : View.GONE);
+            if (!visible) {
+                seekPreview.setVisibility(View.GONE);
+            }
+        }
+
+        public boolean areControlsVisible() {
+            return bottomInfo.getVisibility() == View.VISIBLE;
+        }
+
         private void updatePlayIndicator() {
             playIndicator.setVisibility(showPlayIndicator && !seeking
                     ? View.VISIBLE : View.GONE);
@@ -657,6 +688,7 @@ public final class FeedAdapter extends RecyclerView.Adapter<FeedAdapter.VideoVie
             loading.setVisibility(View.GONE);
             errorPanel.setVisibility(View.GONE);
             playIndicator.setVisibility(View.GONE);
+            setControlsVisible(true);
             seekBar.setProgress(0);
             timeView.setText("00:00 / --:--");
             setSeekEnabled(false);

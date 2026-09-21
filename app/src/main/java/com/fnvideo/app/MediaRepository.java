@@ -10,6 +10,20 @@ import java.util.Map;
 public interface MediaRepository {
     List<Library> libraries() throws Exception;
     Page page(Query query, String cursor) throws Exception;
+    /**
+     * Page through works in the catalog. Implementations may override this
+     * with catalog-specific type filtering; the default keeps older adapters
+     * source-compatible until they do so.
+     */
+    default Page catalogPage(Query query, String cursor) throws Exception {
+        return page(query, cursor);
+    }
+
+    /** Return the best available details for an item already read from the API. */
+    default Video details(Video item) throws Exception {
+        return item;
+    }
+
     Source resolve(Video video) throws Exception;
     Source resolveCompatible(Video video) throws Exception;
     /** Episodes of a series/season container, ordered by season and episode number. */
@@ -21,6 +35,14 @@ public interface MediaRepository {
         public String subtitle = "";
         public String poster = "";
         public String type = "";
+        /** Full synopsis when the server provides one. */
+        public String overview = "";
+        /** Release year as returned by the server; preserve string formatting. */
+        public String year = "";
+        /** Stable parent series id for an episode, when available. */
+        public String seriesId = "";
+        /** Stable season container id for an episode, when available. */
+        public String seasonId = "";
         /** Season number for episodes; zero when the server does not provide one. */
         public int season = 0;
         /** Episode number for episodes; zero when the server does not provide one. */
@@ -38,10 +60,18 @@ public interface MediaRepository {
     final class Query {
         public final String query;
         public final String libraryId;
+        /** Empty means all catalog work kinds; feed queries leave this empty. */
+        public final String kind;
         public final List<String> mediaTypes = FeedPolicy.PLAYABLE_TYPES;
+
         public Query(String query, String libraryId) {
+            this(query, libraryId, "");
+        }
+
+        public Query(String query, String libraryId, String kind) {
             this.query = query == null ? "" : query.trim();
             this.libraryId = libraryId == null ? "" : libraryId;
+            this.kind = kind == null ? "" : kind.trim();
         }
     }
 

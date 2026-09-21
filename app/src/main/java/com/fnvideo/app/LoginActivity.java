@@ -178,8 +178,13 @@ public final class LoginActivity extends Activity {
                 if (!active || ticket != generation) return;
                 setBusy(false);
                 if (resultToken != null) {
+                    // The caller persists token and username together. Keeping
+                    // this Activity side-effect free avoids pairing a new
+                    // username with an old token if the caller rejects the
+                    // result or cannot complete its secure save.
                     setResult(RESULT_OK, new Intent().putExtra("base_url", origin)
-                            .putExtra("token", resultToken));
+                            .putExtra("token", resultToken)
+                            .putExtra("account_id", user));
                     finish();
                 } else {
                     message.setText(resultError == null ? "连接失败，请重试。" : resultError);
