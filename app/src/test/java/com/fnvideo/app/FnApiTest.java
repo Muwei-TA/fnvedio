@@ -23,6 +23,7 @@ public class FnApiTest {
     private FnApi api;
     private String base;
     private final Map<String, String> responses = new ConcurrentHashMap<>();
+    private final Map<String, String> requestResponses = new ConcurrentHashMap<>();
     private final Map<String, String> bodies = new ConcurrentHashMap<>();
     private volatile String authx;
     private volatile String authorization;
@@ -33,12 +34,25 @@ public class FnApiTest {
         server.setDispatcher(new Dispatcher() {
             @Override public MockResponse dispatch(RecordedRequest request) {
                 String path = request.getRequestUrl().encodedPath();
-                bodies.put(path, request.getBody().readUtf8());
+                String requestBody = request.getBody().readUtf8();
+                bodies.put(path, requestBody);
                 authx = request.getHeader("authx");
                 authorization = request.getHeader("Authorization");
                 rawQuery = request.getRequestUrl().encodedQuery();
+                String requestKey = path;
+                if (!requestBody.isEmpty()) {
+                    try {
+                        JSONObject body = new JSONObject(requestBody);
+                        requestKey += "|" + body.optString("parent_guid", "")
+                                + "|" + body.optInt("page", 0);
+                    } catch (Exception ignored) {
+                        // Existing tests intentionally assert raw bodies; use
+                        // the path response when a fixture is not an object.
+                    }
+                }
                 return new MockResponse().setHeader("Content-Type", "application/json")
-                        .setBody(responses.getOrDefault(path, "{\"code\":5001,\"msg\":\"Unexpected route\"}"));
+                        .setBody(requestResponses.getOrDefault(requestKey,
+                                responses.getOrDefault(path, "{\"code\":5001,\"msg\":\"Unexpected route\"}")));
             }
         });
         server.start();
@@ -213,6 +227,109 @@ public class FnApiTest {
         assertEquals(1, body.getInt("page"));
     }
 
+    @Test public void catalogPageUsesWorkKindsAndMapsMetadataFields() throws Exception {
+        responses.put("/v/api/v1/item/list", "{\"code\":0,\"data\":{\"total\":5,\"list\":["
+                + "{\"guid\":\"movie\",\"type\":\"Movie\",\"title\":\"Film\","
+                + "\"overview\":\"A synopsis\",\"year\":2024},"
+                + "{\"guid\":\"series\",\"type\":\"TV\",\"title\":\"Show\","
+                + "\"year\":\"2025\",\"series_guid\":\"series\"},"
+                + "{\"guid\":\"video\",\"type\":\"Video\",\"title\":\"Clip\"},"
+                + "{\"guid\":\"episode\",\"type\":\"Episode\",\"title\":\"S1E1\"},"
+                + "{\"guid\":\"season\",\"type\":\"Season\",\"title\":\"Season 1\"}]}} ");
+
+        MediaRepository.Page page = api.catalogPage(new MediaRepository.Query("", "lib-a"), "");
+        JSONObject body = new JSONObject(bodies.get("/v/api/v1/item/list"));
+        assertEquals("lib-a", body.getString("ancestor_guid"));
+        assertEquals(3, body.getJSONObject("tags").getJSONArray("type").length());
+        assertEquals("Movie", body.getJSONObject("tags").getJSONArray("type").getString(0));
+        assertEquals("TV", body.getJSONObject("tags").getJSONArray("type").getString(1));
+        assertEquals("Video", body.getJSONObject("tags").getJSONArray("type").getString(2));
+        assertEquals(3, page.items.size());
+        assertEquals("A synopsis", page.items.get(0).overview);
+        assertEquals("2024", page.items.get(0).year);
+        assertEquals("series", page.items.get(1).seriesId);
+        assertEquals("", page.nextCursor);
+    }
+
+    @Test public void catalogKindTvUsesObservedTvTypeAndFiltersSearchEpisodes() throws Exception {
+        responses.put("/v/api/v1/item/list", "{\"code\":0,\"data\":{\"total\":2,\"list\":["
+                + "{\"guid\":\"series\",\"type\":\"TV\",\"title\":\"Show\"},"
+                + "{\"guid\":\"movie\",\"type\":\"Movie\",\"title\":\"Film\"}]}} ");
+        MediaRepository.Page tv = api.catalogPage(new MediaRepository.Query("", "", "tv"), "");
+        JSONObject body = new JSONObject(bodies.get("/v/api/v1/item/list"));
+        assertEquals(1, body.getJSONObject("tags").getJSONArray("type").length());
+        assertEquals("TV", body.getJSONObject("tags").getJSONArray("type").getString(0));
+        assertEquals(1, tv.items.size());
+        assertEquals("series", tv.items.get(0).id);
+
+        responses.put("/v/api/v1/search/list", "{\"code\":0,\"data\":{\"list\":["
+                + "{\"guid\":\"movie\",\"type\":\"Movie\"},"
+                + "{\"guid\":\"episode\",\"type\":\"Episode\"},"
+                + "{\"guid\":\"series\",\"type\":\"TV\"}]}} ");
+        MediaRepository.Page search = api.catalogPage(new MediaRepository.Query("show", ""), "");
+        assertEquals(2, search.items.size());
+        assertEquals("movie", search.items.get(0).id);
+        assertEquals("series", search.items.get(1).id);
+        assertEquals("q=show", rawQuery);
+    }
+
+    @Test public void seriesEpisodesWalksSeasonContainersAndPagesPastFiftyWithStableIds() throws Exception {
+        String itemList = "/v/api/v1/item/list";
+        requestResponses.put(itemList + "|series-a|1", "{\"code\":0,\"data\":{\"total\":2,\"list\":["
+                + "{\"guid\":\"season-1\",\"type\":\"Season\",\"season\":1,\"parent_guid\":\"series-a\"},"
+                + "{\"guid\":\"season-2\",\"type\":\"Season\",\"season\":2,\"parent_guid\":\"series-a\"}]}} ");
+        requestResponses.put(itemList + "|season-1|1", episodePage("season-1", 1, 50, 51));
+        requestResponses.put(itemList + "|season-1|2", episodePage("season-1", 50, 2, 51));
+        requestResponses.put(itemList + "|season-2|1", episodePage("season-2", 1, 1, 1));
+
+        MediaRepository.Video series = new MediaRepository.Video();
+        series.id = "series-a";
+        series.type = "TV";
+        List<MediaRepository.Video> episodes = api.seriesEpisodes(series);
+        assertEquals(52, episodes.size());
+        assertEquals("season-1-ep-1", episodes.get(0).id);
+        assertEquals("season-1-ep-51", episodes.get(50).id);
+        assertEquals("season-2-ep-1", episodes.get(51).id);
+        assertEquals("series-a", episodes.get(0).seriesId);
+        assertEquals("season-1", episodes.get(0).seasonId);
+        assertEquals("season-1", episodes.get(50).parentId);
+    }
+
+    @Test public void seriesEpisodesFailsWhenTheServerRepeatsAnUnadvancedPage() throws Exception {
+        String itemList = "/v/api/v1/item/list";
+        String first = episodePage("series-a", 1, 50, 101);
+        requestResponses.put(itemList + "|series-a|1", first);
+        requestResponses.put(itemList + "|series-a|2", first);
+        MediaRepository.Video series = new MediaRepository.Video();
+        series.id = "series-a";
+        try {
+            api.seriesEpisodes(series);
+            fail("Expected an explicit pagination failure");
+        } catch (FnApi.FnApiException error) {
+            assertTrue(error.getMessage().contains("pagination"));
+        }
+    }
+
+    @Test public void containerCannotBeResolvedAsPlayback() throws Exception {
+        MediaRepository.Video series = new MediaRepository.Video();
+        series.id = "series-a";
+        series.type = "TV";
+        try {
+            api.resolve(series);
+            fail("Expected a container rejection");
+        } catch (FnApi.FnApiException error) {
+            assertTrue(error.getMessage().contains("container"));
+        }
+        assertNull(bodies.get("/v/api/v1/play/info"));
+    }
+
+    @Test public void detailsDefaultPreservesAlreadyLoadedItem() throws Exception {
+        MediaRepository.Video item = new MediaRepository.Video();
+        item.id = "movie";
+        item.overview = "Loaded from catalog";
+        assertSame(item, api.details(item));
+    }
+
     @Test public void authFailureRemainsDistinguishableFromNetworkFailure() throws Exception {
         responses.put("/v/api/v1/mdb/list", "{\"code\":-2,\"msg\":\"Auth Failed\"}");
         try { api.libraries(); fail("Expected expired session error"); }
@@ -224,5 +341,21 @@ public class FnApiTest {
         StringBuilder result = new StringBuilder();
         for (byte value : bytes) result.append(String.format("%02x", value & 255));
         return result.toString();
+    }
+
+    private String episodePage(String seasonId, int firstEpisode, int count, int total) {
+        int season = seasonId.endsWith("2") ? 2 : 1;
+        StringBuilder body = new StringBuilder("{\"code\":0,\"data\":{\"total\":")
+                .append(total).append(",\"list\":[");
+        for (int i = 0; i < count; i++) {
+            if (i > 0) body.append(',');
+            int episode = firstEpisode + i;
+            body.append("{\"guid\":\"").append(seasonId).append("-ep-").append(episode)
+                    .append("\",\"type\":\"Episode\",\"season\":").append(season)
+                    .append(",\"episode\":").append(episode)
+                    .append(",\"series_guid\":\"series-a\",\"season_guid\":\"")
+                    .append(seasonId).append("\"}");
+        }
+        return body.append("]}} ").toString();
     }
 }
