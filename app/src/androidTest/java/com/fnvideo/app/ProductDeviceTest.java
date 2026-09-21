@@ -1,11 +1,13 @@
 package com.fnvideo.app;
 
-import android.app.Instrumentation;
 import android.content.Context;
 import android.util.Log;
 
+import androidx.test.platform.app.InstrumentationRegistry;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.junit.Test;
 
 import java.io.InputStream;
 import java.lang.reflect.Method;
@@ -16,20 +18,23 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+
 /**
  * Device-only live catalog diagnostic. It intentionally reports aggregate
  * counters and response metadata, never media identities, URLs, or session
  * values. Run this against an already authenticated test device/container.
  */
-public final class ProductDeviceTest extends android.test.InstrumentationTestCase {
+public final class ProductDeviceTest {
     private static final String TAG = "FnVideoProductDevice";
     private static final int MAX_POSTER_PROBES = 8;
     private static final int CONNECT_TIMEOUT_MS = 10_000;
     private static final int READ_TIMEOUT_MS = 12_000;
 
-    public void testLiveCatalogAndPosterResponses() throws Exception {
-        Instrumentation instrumentation = getInstrumentation();
-        Context context = instrumentation.getTargetContext();
+    @Test public void testLiveCatalogAndPosterResponses() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         String base = SessionStore.base(context);
         String token = SessionStore.token(context);
         if (token == null || token.trim().isEmpty()) {
