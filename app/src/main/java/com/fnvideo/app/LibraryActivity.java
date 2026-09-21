@@ -76,6 +76,7 @@ public final class LibraryActivity extends Activity {
     private String serverBase = "";
     private String sessionToken = "";
     private String accountId = "";
+    private boolean legacyIdentity;
     private String currentLibraryId = "";
     private String currentLibraryTitle = "全部媒体";
     private String currentKind = "";
@@ -126,7 +127,11 @@ public final class LibraryActivity extends Activity {
         root = new FrameLayout(this);
         root.setBackgroundColor(BG);
         root.setOnApplyWindowInsetsListener((view, insets) -> {
-            root.setPadding(0, insets.getSystemWindowInsetTop(), 0, 0);
+            // The bottom navigation is a real child of the root. Reserve the
+            // gesture/navigation inset below its 72dp hit area so the last
+            // row and the selected tab never sit under the system bar.
+            root.setPadding(0, insets.getSystemWindowInsetTop(), 0,
+                    insets.getSystemWindowInsetBottom());
             return insets;
         });
         content = new FrameLayout(this);
@@ -339,6 +344,18 @@ public final class LibraryActivity extends Activity {
         scroll.addView(page);
         page.addView(label("我的影院", 25, PRIMARY, Typeface.BOLD), wrapParams(20, 3));
         page.addView(label(currentLibraryTitle + " · 本机观看记录", 12, SECONDARY, Typeface.NORMAL), wrapParams(0, 18));
+        if (legacyIdentity || accountId.isEmpty()) {
+            LinearLayout identity = column();
+            identity.setPadding(dp(14), dp(12), dp(14), dp(12));
+            identity.setBackground(roundBackground(SURFACE_2, 14));
+            identity.addView(label("旧会话未绑定账号", 14, PRIMARY, Typeface.BOLD), wrapParams(0, 5));
+            identity.addView(label("为避免不同账号共用本机历史，请重新登录后启用继续观看和稍后看。",
+                    12, SECONDARY, Typeface.NORMAL), wrapParams(0, 9));
+            TextView login = actionButton("重新登录并绑定账号", ACCENT);
+            identity.addView(login, new LinearLayout.LayoutParams(-1, dp(44)));
+            page.addView(identity, wrapParams(0, 16));
+            login.setOnClickListener(view -> startLogin());
+        }
 
         List<WatchStateStore.Entry> recent = recentEntries();
         List<MediaRepository.Video> later = watchStore == null
@@ -472,6 +489,44 @@ public final class LibraryActivity extends Activity {
                     Toast.makeText(this, "分集读取失败：" + errorReason(error), Toast.LENGTH_LONG).show();
                 });
             }
+        });
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (!hasSession() || content == null) return;
+        // MainActivity writes WatchStateStore while this Activity is paused.
+        // Rebuild the visible page from the same in-memory context so the
+        // returned detail/list shows the new position without resetting the
+        // catalogue query, selected tab, or scroll offset.
+        int scrollY = currentScrollY();
+        if (detailVideo != null) {
+            renderDetailPage(false);
+        } else if (section == 1) {
+            showWatchPage();
+        } else if (section == 2) {
+            showMyPage();
+        } else if (searchMode) {
+            showSearchPage();
+        } else {
+            showLibraryPage();
+        }
+        restoreScroll(scrollY);
+    }
+
+    private int currentScrollY() {
+        if (content == null || content.getChildCount() == 0) return 0;
+        View page = content.getChildAt(0);
+        return page instanceof ScrollView ? ((ScrollView) page).getScrollY() : 0;
+    }
+
+    private void restoreScroll(int scrollY) {
+        if (scrollY <= 0 || content == null) return;
+        content.post(() -> {
+            if (content.getChildCount() == 0) return;
+            View page = content.getChildAt(0);
+            if (page instanceof ScrollView) ((ScrollView) page).scrollTo(0, scrollY);
         });
     }
 
@@ -758,6 +813,7 @@ public final class LibraryActivity extends Activity {
             serverBase = base;
             sessionToken = token;
             accountId = account;
+            legacyIdentity = account.isEmpty();
             repository = new FnApi(serverBase, sessionToken);
             initStore();
             currentQuery = "";
@@ -775,6 +831,7 @@ public final class LibraryActivity extends Activity {
         serverBase = "";
         sessionToken = "";
         accountId = "";
+        legacyIdentity = false;
         repository = null;
         watchStore = null;
         showSignedOut();
@@ -785,6 +842,7 @@ public final class LibraryActivity extends Activity {
             serverBase = ServerAddress.normalize(SessionStore.base(this));
             sessionToken = safe(SessionStore.token(this));
             accountId = safe(SessionStore.accountId(this));
+            legacyIdentity = !sessionToken.isEmpty() && accountId.isEmpty();
         } catch (Exception error) {
             serverBase = "";
             sessionToken = "";
@@ -1079,6 +1137,16 @@ public final class LibraryActivity extends Activity {
         value.setFocusable(true);
         value.setBackground(roundBackground(Color.rgb(16, 20, 27), 15));
         return value;
+    }
+
+    private TextView label(String value, float size, int color, int style) {
+        TextView text = new TextView(this);
+        text.setText(value);
+        text.setTextSize(size);
+        text.setTextColor(color);
+        text.setTypeface(Typeface.create("sans-serif", style));
+        text.setIncludeFontPadding(false);
+        return text;
     }
 
     private EditText searchField() {

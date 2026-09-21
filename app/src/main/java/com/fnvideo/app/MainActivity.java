@@ -36,6 +36,8 @@ import androidx.viewpager2.widget.ViewPager2;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -59,15 +61,11 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final PlaybackSession playbackSession = new PlaybackSession();
     private final Runnable progressTicker = this::updateProgress;
-    private final Runnable hideControls = () -> {
-        if (foreground && activeHolder != null && hasLoadedPlayback()
-                && player != null && player.getPlayWhenReady()) {
-            activeHolder.setControlsVisible(false);
-        }
-    };
+    private final Runnable hideControls = this::hideControlsIfPlaying;
 
     private ExecutorService networkExecutor;
     private Future<?> playbackRequest;
+    private Future<?> directoryRequest;
     private ExoPlayer player;
     private PosterLoader posterLoader;
     private FeedAdapter adapter;
@@ -99,6 +97,8 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private boolean compatibilityAttempted;
     private boolean advancing;
     private boolean currentCompleted;
+    private boolean fullDirectoryLoaded;
+    private boolean directoryLoading;
     private long requestGeneration;
     private long lastSavedPosition = -1L;
     private Runnable advanceRunnable;
@@ -153,6 +153,8 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
                 .build();
         player.addListener(createPlayerListener());
         updateHeader();
+        fullDirectoryLoaded = !"series".equalsIgnoreCase(mode);
+        requestFullSeriesDirectory();
         // onResume starts the explicit request after the Activity is in the
         // foreground; no cold-start source is resolved while hidden.
     }
@@ -433,6 +435,12 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     }
 
     private void onCurrentEnded() {
+        if ("series".equalsIgnoreCase(mode) && !fullDirectoryLoaded) {
+            requestFullSeriesDirectory();
+            advanceBanner.setText("正在读取完整分集目录…");
+            advanceBanner.setVisibility(View.VISIBLE);
+            return;
+        }
         if (!PlaybackRequest.autoAdvance(getIntent()) || !canAdvance()) {
             showControls();
             return;
@@ -475,12 +483,81 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
 
     private void selectQueueIndex(int index) {
         if (index < 0 || index >= queue.size()) return;
-        saveWatchState(true);
+        // Selecting an episode is a navigation action. Completion is written
+        // only by STATE_ENDED; a manual jump must not mark the old item done.
+        saveWatchState(false);
         queueIndex = index;
         currentVideo = queue.get(index);
         userPaused = false;
         lastSavedPosition = -1L;
         prepareCurrent(false, 0L);
+    }
+
+    /** Fill the bounded Binder handoff with the server's complete episode directory. */
+    private void requestFullSeriesDirectory() {
+        if (fullDirectoryLoaded || directoryLoading || repository == null
+                || currentVideo == null || !"series".equalsIgnoreCase(mode)) return;
+        String seriesId = safe(currentVideo.seriesId);
+        if (seriesId.isEmpty()) seriesId = safe(currentVideo.parentId);
+        if (seriesId.isEmpty()) return;
+        final String requestedSeriesId = seriesId;
+        final String currentId = currentVideo.id;
+        final MediaRepository requestRepository = repository;
+        directoryLoading = true;
+        directoryRequest = networkExecutor.submit(() -> {
+            try {
+                MediaRepository.Video series = new MediaRepository.Video();
+                series.id = requestedSeriesId;
+                series.type = "TV";
+                series.seriesId = requestedSeriesId;
+                List<MediaRepository.Video> values = requestRepository.seriesEpisodes(series);
+                mainHandler.post(() -> {
+                    if (destroyed || repository != requestRepository
+                            || currentVideo == null || !currentId.equals(currentVideo.id)) return;
+                    directoryLoading = false;
+                    mergeFullDirectory(values, currentId);
+                    fullDirectoryLoaded = true;
+                    if (currentCompleted && player != null
+                            && player.getPlaybackState() == Player.STATE_ENDED) onCurrentEnded();
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> {
+                    directoryLoading = false;
+                    if (!destroyed && currentVideo != null && currentId.equals(currentVideo.id)) {
+                        advanceBanner.setText("分集目录读取失败，当前队列已停止在这里");
+                        advanceBanner.setVisibility(View.VISIBLE);
+                    }
+                });
+            }
+        });
+    }
+
+    private void mergeFullDirectory(List<MediaRepository.Video> values, String currentId) {
+        LinkedHashMap<String, MediaRepository.Video> unique = new LinkedHashMap<>();
+        if (values != null) {
+            for (MediaRepository.Video value : values) {
+                if (value != null && !safe(value.id).isEmpty()) unique.put(value.id, value);
+            }
+        }
+        MediaRepository.Video current = null;
+        for (MediaRepository.Video value : queue) {
+            if (value != null && currentId.equals(value.id)) current = value;
+        }
+        if (current == null) current = currentVideo;
+        unique.put(currentId, current);
+        ArrayList<MediaRepository.Video> merged = new ArrayList<>(unique.values());
+        merged.sort(Comparator.comparingInt((MediaRepository.Video value) -> value.season)
+                .thenComparingInt(value -> value.episode)
+                .thenComparing(value -> safe(value.id)));
+        queue.clear();
+        queue.addAll(merged);
+        queueIndex = 0;
+        for (int i = 0; i < queue.size(); i++) {
+            if (currentId.equals(queue.get(i).id)) {
+                queueIndex = i;
+                break;
+            }
+        }
     }
 
     private void updateProgress() {
@@ -512,6 +589,13 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
     private void showControls() {
         mainHandler.removeCallbacks(hideControls);
         if (activeHolder != null) activeHolder.setControlsVisible(true);
+    }
+
+    private void hideControlsIfPlaying() {
+        if (foreground && activeHolder != null && hasLoadedPlayback()
+                && player != null && player.getPlayWhenReady()) {
+            activeHolder.setControlsVisible(false);
+        }
     }
 
     private void showControlsAndScheduleHide() {
@@ -595,9 +679,13 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         card.addView(close, buttonParamsFull());
         Dialog dialog = showDialog(card);
         close.setOnClickListener(view -> dialog.dismiss());
+        if (!fullDirectoryLoaded && "series".equalsIgnoreCase(mode)) {
+            TextView loading = label(directoryLoading ? "正在读取完整分集目录…"
+                    : "分集目录尚未完整读取", 12, SECONDARY, Typeface.NORMAL);
+            card.addView(loading, wrapParams(0, 10));
+        }
         for (int i = 0; i < queue.size(); i++) {
             MediaRepository.Video item = queue.get(i);
-            if (!sameSeason(currentVideo, item)) continue;
             String subtitle = episodeLabel(item) + (i == queueIndex ? "  ·  正在播放" : "");
             TextView row = dialogRow(safe(item.title).isEmpty() ? "未命名分集" : item.title, subtitle);
             if (i == queueIndex) row.setTextColor(ACCENT);
@@ -919,6 +1007,10 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         return button;
     }
 
+    private static String safe(String value) {
+        return value == null ? "" : value.trim();
+    }
+
     private TextView pillButton(String value, int color) {
         TextView button = label(value, 13, color, Typeface.BOLD);
         button.setGravity(Gravity.CENTER);
@@ -997,6 +1089,7 @@ public final class MainActivity extends Activity implements FeedAdapter.Listener
         dismissAdvance();
         mainHandler.removeCallbacksAndMessages(null);
         cancel(playbackRequest);
+        cancel(directoryRequest);
         if (networkExecutor != null) networkExecutor.shutdownNow();
         if (posterLoader != null) posterLoader.shutdown();
         playbackSession.invalidate();
