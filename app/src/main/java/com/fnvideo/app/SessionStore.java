@@ -30,6 +30,8 @@ public final class SessionStore {
     /**
      * Returns the stable login identity used for local watch-state isolation.
      * This is deliberately the username, never the encrypted session token.
+     * An empty result means an old session has no known account and the UI
+     * must request a fresh login before opening account-scoped watch state.
      */
     public static String accountId(Context context) {
         try {
@@ -63,9 +65,13 @@ public final class SessionStore {
         return (SecretKey) store.getKey(ALIAS, null);
     }
 
-    /** Only the login result supplies a new token. Validate before changing stored state. */
+    /**
+     * Compatibility overload for non-login callers. It clears any stale
+     * identity; login callers must use the four-argument overload so a new
+     * token and username are committed together.
+     */
     public static void save(Context context, String base, String token) {
-        save(context, base, token, accountId(context));
+        save(context, base, token, "");
     }
 
     /** Saves a token and its stable username identity in one preference update. */
@@ -75,9 +81,8 @@ public final class SessionStore {
         String identity = accountId == null ? "" : accountId.trim();
         if (token.isEmpty()) {
             SharedPreferences.Editor editor = prefs(context).edit()
-                    .putString("base", origin).remove("token").remove("iv");
-            if (identity.isEmpty()) editor.remove(ACCOUNT_KEY);
-            else editor.putString(ACCOUNT_KEY, identity);
+                    .putString("base", origin).remove("token").remove("iv")
+                    .remove(ACCOUNT_KEY);
             editor.apply();
             return;
         }

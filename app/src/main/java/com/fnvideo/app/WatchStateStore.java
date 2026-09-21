@@ -51,11 +51,16 @@ public final class WatchStateStore {
     /**
      * Creates a local state namespace. The server address is canonicalized so
      * paths, host case, and default ports cannot accidentally split a session.
+     * A missing account identity is rejected so unidentified sessions never
+     * share an empty namespace; callers should ask the user to log in again.
      */
     public WatchStateStore(Context context, String serverOrigin, String accountId) {
         if (context == null) throw new IllegalArgumentException("Missing context");
         this.serverOrigin = ServerAddress.normalize(serverOrigin);
         this.accountId = cleanAccount(accountId);
+        if (this.accountId.isEmpty()) {
+            throw new IllegalArgumentException("Missing account identity; login again before using watch state");
+        }
         this.namespace = this.serverOrigin + "\u0000" + this.accountId;
         this.namespaceHash = digest(namespace);
         this.canMigrateLegacy = !this.accountId.isEmpty();
@@ -258,10 +263,13 @@ public final class WatchStateStore {
 
     private void migrateLegacyLocked(MediaRepository.Video video, String itemId) {
         if (!canMigrateLegacy) return;
-        String oldKey = "position:" + serverOrigin + ":" + itemId;
-        Long oldPosition = readLegacyLong(oldKey);
-        if (oldPosition == null || oldPosition <= 0L) return;
-        String claimKey = LEGACY_CLAIM_PREFIX + digest(oldKey);
+        LegacyPosition legacy = findLegacyPositionLocked(itemId);
+        if (legacy == null) return;
+        // Claim the canonical server/item identity, rather than the literal
+        // preference key. This covers old keys with /v paths or equivalent
+        // default ports and prevents another account acquiring a duplicate
+        // spelling of the same old position.
+        String claimKey = LEGACY_CLAIM_PREFIX + digest(serverOrigin + "\u0000" + itemId);
         String owner = preferenceString(legacyPreferences, claimKey);
         if (owner != null && !owner.equals(namespaceHash)) return;
 
@@ -271,7 +279,7 @@ public final class WatchStateStore {
             legacyPreferences.edit().putString(claimKey, namespaceHash).apply();
         }
         if (readPositionStateLocked(itemId) != null) return;
-        PositionState state = new PositionState(itemId, oldPosition, 0L, 0L, false);
+        PositionState state = new PositionState(itemId, legacy.positionMs, 0L, 0L, false);
         SharedPreferences.Editor editor = preferences.edit()
                 .putString(positionKey(itemId), state.toJson().toString())
                 .putString(snapshotKey(itemId), snapshotJson(video, state).toString());
@@ -279,6 +287,33 @@ public final class WatchStateStore {
         pending.put(itemId, state);
         writeIndexLocked(editor, pending, Collections.emptySet(), Collections.emptySet());
         editor.apply();
+    }
+
+    /** Finds an old position by suffix so item IDs containing ':' remain intact. */
+    private LegacyPosition findLegacyPositionLocked(String itemId) {
+        String prefix = "position:";
+        String suffix = ":" + itemId;
+        String exactKey = prefix + serverOrigin + suffix;
+        Long exact = readLegacyLong(exactKey);
+        if (exact != null) return new LegacyPosition(exact);
+
+        List<String> candidates = new ArrayList<>();
+        for (String key : legacyPreferences.getAll().keySet()) {
+            if (!key.startsWith(prefix) || !key.endsWith(suffix)
+                    || key.length() <= prefix.length() + suffix.length()) {
+                continue;
+            }
+            String storedOrigin = key.substring(prefix.length(), key.length() - suffix.length());
+            if (ServerAddress.sameOrigin(storedOrigin, serverOrigin)
+                    && readLegacyLong(key) != null) {
+                candidates.add(key);
+            }
+        }
+        Collections.sort(candidates);
+        if (candidates.isEmpty()) return null;
+        String selected = candidates.get(0);
+        Long position = readLegacyLong(selected);
+        return position == null ? null : new LegacyPosition(position);
     }
 
     private Long readLegacyLong(String key) {
@@ -427,6 +462,10 @@ public final class WatchStateStore {
             value.put("subtitle", safe(video.subtitle));
             value.put("poster", safe(video.poster));
             value.put("type", safe(video.type));
+            value.put("overview", safe(video.overview));
+            value.put("year", safe(video.year));
+            value.put("seriesId", safe(video.seriesId));
+            value.put("seasonId", safe(video.seasonId));
             value.put("season", video.season);
             value.put("episode", video.episode);
             value.put("parentId", safe(video.parentId));
@@ -443,6 +482,10 @@ public final class WatchStateStore {
         video.subtitle = safe(value.optString("subtitle", ""));
         video.poster = safe(value.optString("poster", ""));
         video.type = safe(value.optString("type", ""));
+        video.overview = safe(value.optString("overview", ""));
+        video.year = safe(value.optString("year", ""));
+        video.seriesId = safe(value.optString("seriesId", ""));
+        video.seasonId = safe(value.optString("seasonId", ""));
         video.season = value.optInt("season", 0);
         video.episode = value.optInt("episode", 0);
         video.parentId = safe(value.optString("parentId", ""));
@@ -457,6 +500,10 @@ public final class WatchStateStore {
         copy.subtitle = safe(source.subtitle);
         copy.poster = safe(source.poster);
         copy.type = safe(source.type);
+        copy.overview = safe(source.overview);
+        copy.year = safe(source.year);
+        copy.seriesId = safe(source.seriesId);
+        copy.seasonId = safe(source.seasonId);
         copy.season = source.season;
         copy.episode = source.episode;
         copy.parentId = safe(source.parentId);
@@ -612,6 +659,14 @@ public final class WatchStateStore {
             } catch (JSONException | RuntimeException invalid) {
                 return null;
             }
+        }
+    }
+
+    private static final class LegacyPosition {
+        final long positionMs;
+
+        LegacyPosition(long positionMs) {
+            this.positionMs = positionMs;
         }
     }
 

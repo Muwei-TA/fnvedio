@@ -69,6 +69,23 @@ public class WatchStateStoreTest {
         assertEquals(7_654L, new WatchStateStore(context, origin, "first-user").position(film));
     }
 
+    @Test public void legacyMigrationMatchesEquivalentOriginAndColonItemIds() {
+        String itemId = "series:season:episode:12";
+        MediaRepository.Video episode = video(itemId, "第十二集");
+        String oldKey = "position:http://NAS.EXAMPLE.TEST:5666/v:" + itemId;
+        context.getSharedPreferences(WatchStateStore.LEGACY_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().putLong(oldKey, 8_765L).commit();
+
+        WatchStateStore first = new WatchStateStore(context,
+                "http://nas.example.test:5666", "first-user");
+        WatchStateStore second = new WatchStateStore(context,
+                "http://nas.example.test:5666/v", "second-user");
+        assertEquals(8_765L, first.position(episode));
+        assertEquals(0L, second.position(episode));
+        assertTrue(context.getSharedPreferences(WatchStateStore.LEGACY_PREFS_NAME,
+                Context.MODE_PRIVATE).contains(oldKey));
+    }
+
     @Test public void corruptIndexFallsBackToPerItemRecords() {
         WatchStateStore store = new WatchStateStore(context,
                 "http://nas.example.test:5666", "alice");
@@ -130,6 +147,31 @@ public class WatchStateStoreTest {
         assertTrue(store.watchLater().isEmpty());
     }
 
+    @Test public void snapshotRetainsSeriesQueueIdentityFields() {
+        film.overview = "简介";
+        film.year = "2026";
+        film.seriesId = "series-7";
+        film.seasonId = "season-2";
+        WatchStateStore store = new WatchStateStore(context,
+                "http://nas.example.test:5666", "alice");
+        store.save(film, 2_000L, 10_000L, false);
+
+        MediaRepository.Video restored = store.recent().get(0).video;
+        assertEquals("简介", restored.overview);
+        assertEquals("2026", restored.year);
+        assertEquals("series-7", restored.seriesId);
+        assertEquals("season-2", restored.seasonId);
+    }
+
+    @Test public void missingAccountIdentityCannotUseSharedEmptyNamespace() {
+        try {
+            new WatchStateStore(context, "http://nas.example.test:5666", "");
+            fail("An unidentified session must re-login before local state access");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("account"));
+        }
+    }
+
     @Test public void accountIdentityIsUsernameAndNotPasswordOrToken() {
         SessionStore.rememberAccountId(context, "  synthetic-user  ");
         assertEquals("synthetic-user", SessionStore.accountId(context));
@@ -146,6 +188,10 @@ public class WatchStateStoreTest {
         value.subtitle = "副标题";
         value.poster = "poster://" + id;
         value.type = "Movie";
+        value.overview = "";
+        value.year = "";
+        value.seriesId = "";
+        value.seasonId = "";
         value.season = 0;
         value.episode = 0;
         value.parentId = "";
